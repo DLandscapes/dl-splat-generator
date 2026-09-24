@@ -262,6 +262,14 @@ select {
 #canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 #overlay { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 
+/* The photo view: the photograph's own rectangle, outlined, with everything
+   outside it dimmed. The mask clips the frame's shadow to the viewport. */
+.photo-mask { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.photo-frame {
+  position: absolute; border: 1px solid var(--on-stage);
+  box-shadow: 0 0 0 200vmax rgba(20, 22, 26, .62);
+}
+
 /* measurement + annotation markers, projected each frame */
 .marker {
   position: absolute; transform: translate(-50%, -50%);
@@ -456,6 +464,54 @@ select {
 #brandmark:hover { color: rgba(253,252,249,.9); }
 #brandmark:hover img { opacity: 1; }
 #brandmark img { width: 1.15em; height: 1.15em; opacity: .6; }
+
+/* Samples on the Import panel, in digital-landscapes.com's own grammar: image
+   frames with a 12 px fillet, filled edge to edge; grayscale until reached for;
+   the asymmetric 17-6-17-6 chip; a caption under every image. */
+.samples-head {
+  font-family: var(--font-head); font-size: .68rem; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--ink-soft); margin: 2px 0 8px;
+}
+#samples-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.sample-tile {
+  all: unset; cursor: pointer; display: flex; flex-direction: column; gap: 7px;
+  min-width: 0;
+}
+.sample-img {
+  position: relative; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden;
+  background: var(--line);
+  outline: 1.5px solid transparent; outline-offset: 2px; transition: outline-color .15s;
+}
+.sample-img img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+  filter: grayscale(1) contrast(1.05); transition: filter .25s;
+}
+.sample-tile:hover .sample-img, .sample-tile:focus-visible .sample-img,
+.sample-tile.on .sample-img { outline-color: var(--on-stage); }
+.sample-tile:hover img, .sample-tile:focus-visible img, .sample-tile.on img { filter: none; }
+.sample-chip {
+  position: absolute; left: 8px; top: 8px; padding: 2px 9px;
+  font-size: .66rem; letter-spacing: .06em; color: var(--on-stage);
+  background: rgba(20, 22, 26, .72); border: 1.5px solid rgba(253, 252, 249, .35);
+  border-radius: 17px 6px 17px 6px;
+}
+.sample-cap b { display: block; font-size: .84rem; font-weight: 600; line-height: 1.2; color: var(--ink); }
+.sample-cap span { display: block; margin-top: 2px; font-size: .72rem; line-height: 1.35; color: var(--ink-soft); }
+#panel-tests { margin-top: 10px; }
+
+#sample-card {
+  position: absolute; right: 16px; bottom: 40px; z-index: 2; max-width: 320px;
+  padding: 10px 30px 11px 14px; border-radius: 12px;
+  background: var(--glass); color: var(--ink); box-shadow: 0 2px 10px rgba(0,0,0,.25);
+  font-size: .78rem; line-height: 1.4;
+}
+#sample-card-close { position: absolute; right: 9px; top: 5px; font-size: 1rem; }
+.sample-kicker {
+  font-family: var(--font-head); font-size: .66rem; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--ink-soft); margin-bottom: 3px;
+}
+.sample-title { font-size: .95rem; font-weight: 600; }
+.sample-meta { color: var(--ink-soft); }
 
 /* the finish signal: the viewport blinks three times */
 #job-flash { position: absolute; inset: 0; pointer-events: none; opacity: 0; background: var(--on-stage); }

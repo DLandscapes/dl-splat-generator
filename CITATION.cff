@@ -11,7 +11,7 @@ abstract: >-
   Site video to a measurable splat scene. A browser viewer for Gaussian-splat
   scenes of landscapes and sites that measures rather than only shows: distances,
   heights and areas at a calibrated scale, section boxes, annotations and saved
-  viewpoints, with an export that runs on any static host. Behind it, an
+  viewpoints, and still images of any of it. Behind it, an
   optional generator turns a walked phone video into camera poses, a splat
   scene, a dense measurable mesh and a ground-only terrain model that can be cut
   into laser sheets. It states its limits where it offers its results: a

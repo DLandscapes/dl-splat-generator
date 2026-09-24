@@ -56,13 +56,14 @@ def log(msg: str) -> None:
 
 
 def estimate_depth(image_path: Path, model_id: str, max_side: int):
-    """Return (depth_metres HxW, rgb HxWx3 uint8)."""
+    """Return (depth_metres HxW, rgb HxWx3 uint8, the photo's own (w, h))."""
     import numpy as np
     import torch
     from PIL import Image
     from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
     img = Image.open(image_path).convert("RGB")
+    original = img.size
     if max(img.size) > max_side:
         scale = max_side / max(img.size)
         img = img.resize((round(img.width * scale), round(img.height * scale)),
@@ -80,7 +81,7 @@ def estimate_depth(image_path: Path, model_id: str, max_side: int):
     depth = torch.nn.functional.interpolate(
         predicted.unsqueeze(1), size=(img.height, img.width),
         mode="bicubic", align_corners=False).squeeze().cpu().numpy()
-    return depth.astype("float32"), np.asarray(img, dtype="uint8")
+    return depth.astype("float32"), np.asarray(img, dtype="uint8"), original
 
 
 def build_splats(depth, rgb, *, fov_deg: float, stride: int, edge_drop: float):
@@ -234,7 +235,7 @@ def main() -> int:
     began = time.time()
     log("[1/3] depth")
     try:
-        depth, rgb = estimate_depth(image, MODELS[args.scene], args.max_side)
+        depth, rgb, original = estimate_depth(image, MODELS[args.scene], args.max_side)
     except Exception as exc:                                  # noqa: BLE001
         print(f"FAILED: depth estimation: {exc}", file=sys.stderr)
         return 2
@@ -280,6 +281,10 @@ def main() -> int:
         "created": created,
         "ply": ply.name,
         "metric": True,
+        # The photo's own size, and the size it was worked at: the viewer's
+        # photo view frames the scene at exactly this rectangle.
+        "image": {"width": original[0], "height": original[1],
+                  "worked": [int(depth.shape[1]), int(depth.shape[0])]},
         "settings": {"stride": args.stride, "fov": args.fov,
                      "edge_drop": args.edge_drop, "flatten": args.flatten,
                      "max_side": args.max_side},

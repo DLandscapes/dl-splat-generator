@@ -3,7 +3,7 @@
 import { Viewer } from "./viewer.js";
 import { Tools } from "./tools.js";
 import {
-  buildScene, applyScene, downloadBlob, exportWebScene, sha256,
+  buildScene, applyScene, downloadBlob, sha256, makeZip,
 } from "./scene.js";
 
 const $ = (id) => document.getElementById(id);
@@ -20,7 +20,7 @@ const freshSection = () =>
   ({ enabled: false, min: { x: 0, y: 0, z: 0 }, max: { x: 1, y: 1, z: 1 } });
 
 const display = {
-  lodScale: 1,
+  detail: null,            // share of splats drawn; null = this computer's default
   blur: 0.3,
   section: freshSection(),
 };
@@ -61,8 +61,15 @@ tools.onHint = (text) => {
  * scene from the generated list has. */
 let generatedName = null;
 
-async function loadSource(next, label, fromGenerated = null) {
+/* The sample open now (an entry of samples.json), or null. A sample carries
+ * the part of capture.json the viewer needs in its own `record`, since it has
+ * no output folder to fetch one from. */
+let currentSample = null;
+
+async function loadSource(next, label, fromGenerated = null, sample = null) {
   generatedName = fromGenerated;
+  currentSample = sample;
+  showSampleCard();
   status(`Loading ${label}…`, 0);
   try {
     const info = next.file
@@ -76,6 +83,7 @@ async function loadSource(next, label, fromGenerated = null) {
     tools.calibrated = false;
     tools.scaleFactor = 1;
     display.section = freshSection();
+    display.detail = null;   // a new scene starts at this computer's default
     onSceneChanged();
     status(`${info.name} — ${info.count.toLocaleString("en-US")} splats`);
   } catch (err) {
@@ -87,7 +95,8 @@ async function loadSource(next, label, fromGenerated = null) {
 function onSceneChanged() {
   const loaded = !!viewer.mesh;
   for (const id of ["panel-display", "panel-scale", "panel-tools",
-                    "panel-section", "panel-notes", "panel-views", "panel-scene"]) {
+                    "panel-section", "panel-notes", "panel-views", "panel-scene",
+                    "panel-still"]) {
     // panels marked data-incomplete stay hidden until their feature works
     $(id).hidden = !loaded || $(id).hasAttribute("data-incomplete");
   }
@@ -106,6 +115,7 @@ function onSceneChanged() {
     $("scene-meta").textContent =
       `${sourceInfo.count.toLocaleString("en-US")} splats · ${sourceInfo.type}`;
   }
+  syncDetailUi();
   // section box resets to the whole scene when a new scene arrives
   syncSectionUi();
   refreshLists();
@@ -239,6 +249,7 @@ function refreshLists() {
     : "Not calibrated. A splat scene has no built-in scale, so measurements "
       + "show as “units” until you set one.";
   $("assume-metric").disabled = tools.calibrated && tools.scaleFactor === 1;
+  labelStillSize();                  // "one per viewpoint" follows the list
 
   for (const [id, kind] of [["tool-dist", "distance"], ["tool-height", "height"],
                             ["tool-area", "area"], ["tool-note", "note"],
@@ -260,6 +271,8 @@ $("clear-btn").onclick = (e) => {
   e.stopPropagation();
   viewer.clear();
   source = null; sourceInfo = null;
+  currentSample = null;
+  showSampleCard();
   tools.measurements = []; tools.notes = []; tools.viewpoints = [];
   onSceneChanged();
 };
@@ -791,6 +804,11 @@ async function refreshMeshPanel() {
   } catch { panel.hidden = true; syncGroups(); return; }
   panel.hidden = false;
   meshInfo = info;
+  $("mesh-photo").hidden = !info.singlePhoto;
+  $("mesh-controls").hidden = !!info.singlePhoto;
+  $("mesh-limits").hidden = !!info.singlePhoto;
+  $("mesh-intro").hidden = !!info.singlePhoto;
+  if (info.singlePhoto) { $("dem-block").hidden = true; syncGroups(); return; }
 
   $("mesh-go").disabled = !info.ready;
   $("mesh-show").hidden = !info.cloudUrl;
@@ -1187,9 +1205,98 @@ async function listGeneratedScenes() {
 listGeneratedScenes();
 detectBackend();
 
-$("demo-btn").onclick = () => loadSource({ url: "data/demo.ply", name: "demo.ply" }, "demo");
+$("landform-btn").onclick = () =>
+  loadSource({ url: "data/landform.ply", name: "landform.ply" }, "contour landform");
 $("calib-btn").onclick = () =>
-  loadSource({ url: "data/calibration.ply", name: "calibration.ply" }, "calibration scene");
+  loadSource({ url: "data/calibration.ply", name: "calibration.ply" }, "measuring test");
+
+/* ------------------------------------------------------------------ samples */
+
+/* Real scenes made with this tool, listed in data/samples/samples.json (written
+ * by tools/make_sample.py). `?samples=<same-origin url>` points at another list,
+ * which is how a stand-in list is tried without touching the real one. */
+function samplesUrl() {
+  const asked = new URLSearchParams(location.search).get("samples");
+  if (asked) {
+    try {
+      const u = new URL(asked, location.href);
+      if (u.origin === location.origin) return u;   // never a request elsewhere
+    } catch { /* not a URL: fall back */ }
+  }
+  return new URL("data/samples/samples.json", location.href);
+}
+
+const shortCount = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} M`
+  : n >= 1e3 ? `${Math.round(n / 1e3)} k` : `${n}`);
+
+async function listSamples() {
+  const base = samplesUrl();
+  let list = [];
+  try {
+    const res = await fetch(base, { cache: "no-store" });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.format === "dlsamples" && Array.isArray(data.samples)) list = data.samples;
+    }
+  } catch { /* no samples shipped: the test scenes stand alone */ }
+
+  const grid = $("samples-grid");
+  grid.innerHTML = "";
+  // the walked video first, then the photograph: the order of the Make panel
+  list.sort((a, b) => (a.kind === "video" ? 0 : 1) - (b.kind === "video" ? 0 : 1));
+  for (const s of list) {
+    const tile = document.createElement("button");
+    tile.className = "sample-tile";
+    tile.dataset.id = s.id;
+    const frame = document.createElement("div");
+    frame.className = "sample-img";
+    const img = document.createElement("img");
+    img.src = new URL(s.thumb, base).href;
+    img.alt = s.title;
+    img.loading = "lazy";
+    const chip = document.createElement("span");
+    chip.className = "sample-chip";
+    chip.textContent = s.kind === "photo" ? "Photo" : "Video";
+    frame.append(img, chip);
+    const cap = document.createElement("div");
+    cap.className = "sample-cap";
+    const title = document.createElement("b");
+    title.textContent = s.title;
+    const line = document.createElement("span");
+    line.textContent = s.kind === "photo"
+      ? `One photograph · 2.5D, metric · ${shortCount(s.splats)} splats`
+      : `A walked video · ${s.frames} frames solved · ${shortCount(s.splats)} splats`;
+    cap.append(title, line);
+    tile.append(frame, cap);
+    tile.onclick = () => {
+      for (const t of grid.children) t.classList.toggle("on", t === tile);
+      loadSource({ url: new URL(s.scene, base).href, name: `${s.id}.spz` }, s.title, null, s);
+    };
+    grid.appendChild(tile);
+  }
+  $("samples").hidden = !list.length;
+  // with nothing to show off, the test scenes are what there is to open
+  if (!list.length) $("panel-tests").open = true;
+}
+listSamples();
+
+function showSampleCard() {
+  const s = currentSample;
+  $("sample-card").hidden = !s;
+  for (const t of $("samples-grid").children) t.classList.toggle("on", !!s && t.dataset.id === s.id);
+  if (!s) return;
+  $("sample-kicker").textContent = `Sample · ${s.kind === "photo" ? "one photograph" : "walked video"}`;
+  $("sample-title").textContent = [s.title, s.place, s.date].filter(Boolean).join(" · ");
+  const how = s.kind === "photo"
+    ? "Depth estimated from a single picture: faithful near where it was taken, "
+      + "and opened in the photo's own frame."
+    : `${s.frames} frames solved into a scene, opened at the first camera — `
+      + "walk the capture to see it as filmed.";
+  const thinned = s.splatsOriginal > s.splats
+    ? ` Thinned to ${shortCount(s.splats)} of ${shortCount(s.splatsOriginal)} splats to travel light.` : "";
+  $("sample-meta").textContent = (s.note ? `${s.note} ` : "") + how + thinned;
+}
+$("sample-card-close").onclick = () => { $("sample-card").hidden = true; };
 
 const veil = $("dropveil");
 let dragDepth = 0;
@@ -1225,10 +1332,45 @@ window.addEventListener("drop", (e) => {
 
 /* ------------------------------------------------------------------ display */
 
+const splatsShort = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)} M` : n.toLocaleString("en-US");
+
+/* The slider says what it does: the share of the scene's splats drawn, and how
+ * many that is. On a scene small enough to need no level-of-detail tree it is
+ * disabled and says why, rather than moving and changing nothing. */
+function syncDetailUi() {
+  const n = viewer.splatCount;
+  const slider = $("lod-scale");
+  slider.disabled = !viewer.hasLod;
+  if (!viewer.hasLod) {
+    slider.value = 1;
+    $("lod-val").textContent = "100 %";
+    $("lod-note").textContent = n
+      ? `Every splat is drawn — ${splatsShort(n)} is few enough to need no level of detail.`
+      : "";
+    viewer.setDetail(null);
+    return;
+  }
+  const share = display.detail ?? viewer.defaultDetail();
+  slider.value = share;
+  viewer.setDetail(display.detail);
+  const drawn = Math.round(share * n);
+  $("lod-val").textContent = `${Math.round(share * 100)} %`;
+  $("lod-note").textContent = (share >= 1
+    ? `All ${splatsShort(n)} splats drawn.`
+    : `Up to ${splatsShort(drawn)} of ${splatsShort(n)} splats drawn; the rest stand in as coarser ones, mostly far away.`)
+    + (display.detail == null ? " This computer's default." : " Lower is smoother on a slow computer.");
+}
+/* A saved scene's detail. Files before 2026-09-24 stored `lodScale`, a factor
+ * on this computer's budget; turn it into the share it meant. 1 was the
+ * default, so it stays the default. */
+function sceneDetail(d) {
+  if (d.detail !== undefined) return d.detail;
+  if (d.lodScale == null || d.lodScale === 1 || !viewer.hasLod) return null;
+  return Math.min(1, Math.max(0.1, d.lodScale * viewer.defaultDetail()));
+}
 $("lod-scale").oninput = (e) => {
-  display.lodScale = parseFloat(e.target.value);
-  viewer.setLodScale(display.lodScale);
-  $("lod-val").textContent = `${display.lodScale.toFixed(2)}×`;
+  display.detail = parseFloat(e.target.value);
+  syncDetailUi();
 };
 $("blur").oninput = (e) => {
   display.blur = parseFloat(e.target.value);
@@ -1257,6 +1399,15 @@ let cameraView = false;
 
 function setCameraView(on) {
   const cams = viewer.captureCameras;
+  if (!cams && viewer.photoCamera) {
+    cameraView = !!on;
+    $("gizmo-camera").classList.toggle("on", cameraView);
+    $("gizmo-frames").hidden = true;
+    if (cameraView) viewer.enterPhotoView(true);
+    else viewer.leavePhotoView();
+    labelStillSize();
+    return;
+  }
   cameraView = !!on && !!cams;
   $("gizmo-camera").classList.toggle("on", cameraView);
   $("gizmo-frames").hidden = !cameraView;
@@ -1277,11 +1428,15 @@ function labelFrame() {
 }
 
 function syncCameraButton() {
-  const has = !!viewer.captureCameras;
+  const photo = !viewer.captureCameras && !!viewer.photoCamera;
+  const has = !!viewer.captureCameras || photo;
   $("gizmo-camera").disabled = !has;
-  $("gizmo-camera").title = has
-    ? "Stand where the camera stood"
-    : "Only for a scene made here — it needs the capture's camera path";
+  $("gizmo-camera").textContent = photo ? "Photo" : "Camera";
+  $("gizmo-camera").title = photo
+    ? "Stand where the photo was taken — its field of view, its frame"
+    : has
+      ? "Stand where the camera stood"
+      : "Only for a scene made here — it needs the capture's camera path";
   if (!has) setCameraView(false);
 }
 
@@ -1322,7 +1477,16 @@ function drawGizmo() {
 
 // Tools already owns onFrame for its overlay; chain rather than replace.
 const toolsOnFrame = viewer.onFrame;
-viewer.onFrame = () => { toolsOnFrame?.(); drawGizmo(); };
+viewer.onFrame = () => {
+  toolsOnFrame?.();
+  drawGizmo();
+  // a drag or zoom leaves the photo view; the button follows
+  if (cameraView && viewer.photoCamera && !viewer.captureCameras && !viewer.photoView) {
+    cameraView = false;
+    $("gizmo-camera").classList.remove("on");
+    if (!$("panel-still").hidden) labelStillSize();
+  }
+};
 
 /* ------------------------------------------------------------------ section */
 
@@ -1436,19 +1600,36 @@ function labelWalkSpeed() {
 
 async function syncFromCaptureRecord() {
   walkRealtimeFps = null;
-  let rec = null;
-  if (generatedName) {
+  // a sample carries its record; a scene made here has one in its output folder
+  let rec = currentSample?.record ?? null;
+  if (!rec && generatedName) {
     try {
       rec = await (await fetch(
         `/output/${encodeURIComponent(generatedName)}/capture.json`)).json();
-      const stride = rec?.settings?.stride;
-      if (rec?.fps > 0 && stride > 0) {
-        walkRealtimeFps = Math.max(1, Math.min(30, Math.round(rec.fps / stride)));
-      }
     } catch { /* no record, or a scene not made here: keep the defaults */ }
+  }
+  const stride = rec?.settings?.stride;
+  if (rec?.fps > 0 && stride > 0) {
+    walkRealtimeFps = Math.max(1, Math.min(30, Math.round(rec.fps / stride)));
   }
   if (walkRealtimeFps) $("walk-speed").value = walkRealtimeFps;
   labelWalkSpeed();
+
+  /* A single-photo scene: its camera is known exactly, so the navigation's
+   * camera button stands there. The record carries the field of view, and the
+   * image size since 2026-09-24; older records have the aspect read back from
+   * the splats instead. */
+  if (rec?.method === "single-image metric depth" && viewer.mesh) {
+    const img = rec.image;
+    const aspect = img?.width > 0 && img?.height > 0 ? img.width / img.height
+      : img?.aspect > 0 ? img.aspect : viewer.photoAspectFromSplats();
+    viewer.setPhotoCamera({ hfov: Number(rec.settings?.fov) || 65, aspect });
+  } else {
+    viewer.setPhotoCamera(null);
+  }
+  syncCameraButton();
+  // a photo SAMPLE opens where it is faithful: in the photo's own frame
+  if (currentSample?.kind === "photo" && viewer.photoCamera) setCameraView(true);
 
   /* A single-photo scene is built from METRIC depth, so it really does open
    * already scaled -- the depth tool's own last line tells you to press
@@ -1517,6 +1698,215 @@ async function currentBytes() {
   return new Uint8Array(await res.arrayBuffer());
 }
 
+/* ------------------------------------------------------------ still image */
+
+/* What a student hands in: the view as framed, at a chosen size. The 3D image
+ * comes from Viewer.captureStill(); measurements and notes live in a DOM layer
+ * ON TOP of the canvas, so a plain capture would silently drop them. They are
+ * therefore redrawn here from the same data, in the same style, at the still's
+ * own scale -- which also keeps them sharp at 4K where a screenshot of the
+ * DOM would be blurred. The colours and fonts are read from the live theme, so
+ * the still matches the screen. */
+
+/* The width the whole viewport is rendered at. In the photo view the still is
+ * cropped to the photo's rectangle, so "4K wide" is asked of the crop and the
+ * viewport is rendered wider by the same factor. */
+function stillWidth() {
+  const v = $("still-size").value;
+  const cssW = $("canvas").clientWidth || 1;
+  const dpr = viewer.renderer.getPixelRatio();
+  const frame = viewer.photoFrameRect();
+  if (v === "2x") return Math.round(cssW * dpr * 2);
+  if (v === "3840") return Math.round(3840 * (frame ? cssW / frame.w : 1));
+  return Math.round(cssW * dpr);
+}
+
+/* The size a still comes out at: the viewport, or the photo's rectangle. */
+function stillSize() {
+  const c = $("canvas");
+  const cssW = Math.max(1, c.clientWidth);
+  const scale = stillWidth() / cssW;
+  const frame = viewer.photoFrameRect();
+  return frame
+    ? { w: Math.round(frame.w * scale), h: Math.round(frame.h * scale), frame: true }
+    : { w: Math.round(cssW * scale), h: Math.round(c.clientHeight * scale), frame: false };
+}
+
+function labelStillSize() {
+  const { w, h, frame } = stillSize();
+  $("still-size-note").textContent = `${w} × ${h} px${frame ? " — the photo's frame" : ""}`;
+  $("still-views").disabled = !tools.viewpoints.length;
+  $("still-views").title = tools.viewpoints.length
+    ? `${tools.viewpoints.length} saved viewpoint(s)`
+    : "save a viewpoint first (Display → Viewpoints)";
+}
+
+function drawOverlay(ctx, scale) {
+  const css = getComputedStyle(document.documentElement);
+  const token = (n, fallback) => (css.getPropertyValue(n).trim() || fallback);
+  const onStage = token("--on-stage", "#fdfcf9");
+  const sheet = token("--sheet", "#14161a");
+  const ink = token("--ink", "#ece8e1");
+  const line = token("--line", "#343841");
+  const body = token("--font-body", "sans-serif");
+  const head = token("--font-head", "sans-serif");
+  const W = ctx.canvas.width, H = ctx.canvas.height;
+  const at = (p) => {
+    const s = viewer.project(p);
+    return { x: s.x * scale, y: s.y * scale,
+             ok: s.visible && s.x >= 0 && s.y >= 0 && s.x * scale <= W && s.y * scale <= H };
+  };
+
+  // lines and areas first, so markers and labels sit on top of them
+  for (const m of tools.measurements) {
+    const pts = m.points.map(at);
+    if (pts.length < 2 || !pts.every((q) => q.ok)) continue;
+    ctx.beginPath();
+    pts.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)));
+    if (m.kind === "area") {
+      ctx.closePath();
+      ctx.fillStyle = "rgba(217,195,154,.25)";
+      ctx.fill();
+    }
+    ctx.strokeStyle = onStage;
+    ctx.lineWidth = 1.5 * scale;
+    ctx.stroke();
+  }
+
+  const marker = (q) => {
+    const r = 4.5 * scale;
+    ctx.beginPath(); ctx.arc(q.x, q.y, r + 2 * scale, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(20,22,26,.85)"; ctx.fill();
+    ctx.beginPath(); ctx.arc(q.x, q.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = onStage; ctx.fill();
+  };
+
+  // a label box centred above its point, the way .label sits on screen
+  const label = (q, lines, lift) => {
+    const size = 11.4 * scale, lh = size * 1.3;
+    const padX = 7 * scale, padY = 3 * scale;
+    const widths = lines.map(({ text, bold }) => {
+      ctx.font = `${bold ? "700" : "400"} ${size}px ${bold ? head : body}`;
+      return ctx.measureText(text).width;
+    });
+    const w = Math.max(...widths) + padX * 2;
+    const h = lh * lines.length + padY * 2;
+    const x = q.x - w / 2, y = q.y - h * lift;
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, 5 * scale);
+    ctx.fillStyle = sheet; ctx.fill();
+    ctx.strokeStyle = line; ctx.lineWidth = scale; ctx.stroke();
+    ctx.fillStyle = ink;
+    ctx.textBaseline = "middle";
+    lines.forEach(({ text, bold }, i) => {
+      ctx.font = `${bold ? "700" : "400"} ${size}px ${bold ? head : body}`;
+      ctx.fillText(text, x + padX, y + padY + lh * (i + 0.5));
+    });
+  };
+
+  for (const m of tools.measurements) {
+    const pts = m.points.map(at);
+    pts.filter((q) => q.ok).forEach(marker);
+    if (!pts.every((q) => q.ok)) continue;
+    const mid = pts.reduce((a, q) => ({ x: a.x + q.x / pts.length, y: a.y + q.y / pts.length }),
+                           { x: 0, y: 0 });
+    label({ ...mid, ok: true }, [{ text: tools.format(m) }], 1.4);
+  }
+  for (const n of tools.notes) {
+    const q = at(n.point);
+    if (!q.ok) continue;
+    marker(q);
+    const lines = [{ text: n.title, bold: true }];
+    if (n.text) lines.push({ text: n.text });
+    label(q, lines, 1.6);
+  }
+}
+
+async function stillBlob() {
+  if (viewer.walking) viewer.stopWalk();        // a moving camera never settles
+  const frame = viewer.photoFrameRect();         // read before rendering moves nothing
+  let shot = await viewer.captureStill({ width: stillWidth() });
+  const scale = shot.width / $("canvas").clientWidth;
+  if ($("still-overlay").checked) {
+    await document.fonts.ready;                 // labels in the house fonts
+    drawOverlay(shot.getContext("2d"), scale);
+  }
+  if (frame) {
+    // the photo view: keep exactly the photo's rectangle
+    const crop = document.createElement("canvas");
+    crop.width = Math.round(frame.w * scale);
+    crop.height = Math.round(frame.h * scale);
+    crop.getContext("2d").drawImage(shot, Math.round(frame.x * scale), Math.round(frame.y * scale),
+      crop.width, crop.height, 0, 0, crop.width, crop.height);
+    crop.stillInfo = { ...shot.stillInfo, width: crop.width, height: crop.height };
+    shot = crop;
+  }
+  const blob = await new Promise((res) => shot.toBlob(res, "image/png"));
+  if (!blob) throw new Error("the browser could not encode the image");
+  return { blob, info: shot.stillInfo };
+}
+
+const stillStem = () => ((generatedName || sourceInfo?.name || "scene")
+  .replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9_-]+/g, "_"));
+const stamp = () => new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+
+function sayStill(info, what) {
+  const clamp = info.clamped
+    ? ` Capped at ${info.maxDim} px — the most this graphics chip can hold.` : "";
+  $("still-state").textContent = `${what} — ${info.width} × ${info.height} px.${clamp}`;
+}
+
+$("still-size").onchange = labelStillSize;
+window.addEventListener("resize", () => { if (!$("panel-still").hidden) labelStillSize(); });
+$("panel-still").addEventListener("toggle", labelStillSize);
+
+$("still-go").onclick = async () => {
+  const btn = $("still-go");
+  btn.disabled = true;
+  $("still-state").textContent = "Rendering the still…";
+  try {
+    const { blob, info } = await stillBlob();
+    const name = `${stillStem()}-still-${stamp()}.png`;
+    downloadBlob(blob, name);
+    sayStill(info, `Saved ${name}`);
+  } catch (err) {
+    $("still-state").textContent = `⚠ ${err.message}`;
+  }
+  btn.disabled = false;
+};
+
+/* One still per saved viewpoint, as one ZIP: the natural way to hand in
+ * several states of the same scene. Each viewpoint is jumped to without
+ * animation, and the view the student was on is put back afterwards. */
+$("still-views").onclick = async () => {
+  if (!tools.viewpoints.length) return;
+  const btn = $("still-views");
+  btn.disabled = true;
+  const back = viewer.getCameraState();
+  const entries = [];
+  let info = null;
+  try {
+    for (const [i, v] of tools.viewpoints.entries()) {
+      $("still-state").textContent =
+        `Rendering ${i + 1} of ${tools.viewpoints.length}: ${v.name}…`;
+      viewer.setCameraState(v.camera, false);
+      const shot = await stillBlob();
+      info = shot.info;
+      const safe = v.name.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 40) || `view${i + 1}`;
+      entries.push({ name: `${String(i + 1).padStart(2, "0")}-${safe}.png`,
+                     data: new Uint8Array(await shot.blob.arrayBuffer()) });
+    }
+    const name = `${stillStem()}-stills-${stamp()}.zip`;
+    downloadBlob(makeZip(entries), name);
+    sayStill(info, `Saved ${entries.length} stills in ${name}`);
+  } catch (err) {
+    $("still-state").textContent = `⚠ ${err.message}`;
+  } finally {
+    viewer.setCameraState(back, false);
+    btn.disabled = false;
+  }
+};
+
 $("scene-save").onclick = async () => {
   if (!source) return;
   try {
@@ -1559,16 +1949,13 @@ async function loadSceneFile(file) {
         status(`⚠ Scene was saved against a different ${data.source.name}.`, 6000);
     }
     Object.assign(display, {
-      lodScale: d.lodScale ?? display.lodScale,
+      detail: sceneDetail(d),
       blur: d.blur ?? display.blur,
       // normalize handles scenes saved with the old plane shape {axis, t, flip}
       section: data.section ? Viewer.normalizeSection(data.section) : display.section,
     });
-    $("lod-scale").value = display.lodScale;
-    $("lod-val").textContent = `${display.lodScale.toFixed(2)}×`;
     $("blur").value = display.blur;
     $("blur-val").textContent = display.blur.toFixed(2);
-    viewer.setLodScale(display.lodScale);
     viewer.setBlur(display.blur);
     syncSectionUi();
     applySection();
@@ -1576,42 +1963,6 @@ async function loadSceneFile(file) {
     status("Scene restored.");
   } catch (err) { fail(err); }
 }
-
-$("scene-export").onclick = async () => {
-  if (!source) return;
-  const title = prompt("Title for the exported scene:",
-    sourceInfo.name.replace(/\.[^.]+$/, "")) ;
-  if (title === null) return;
-  try {
-    status("Building bundle…", 0);
-    const bytes = await currentBytes();
-    const scene = buildScene({
-      viewer, tools, display,
-      source: {
-        name: sourceInfo.name, bytes: bytes.length,
-        splats: sourceInfo.count, sha256: await sha256(bytes),
-      },
-    });
-    scene.title = title;
-    const zip = await exportWebScene({
-      scene, splatBytes: bytes, splatName: sourceInfo.name, title,
-      onProgress: (text) => status(text, 0),
-      fetchAsset: async (path) => {
-        const res = await fetch(path);
-        if (!res.ok) throw new Error(`Bundle asset missing: ${path}`);
-        return new Uint8Array(await res.arrayBuffer());
-      },
-    });
-    downloadBlob(zip, `${title.replace(/[^\w.-]+/g, "-")}-web-scene.zip`);
-    const s = zip.splatStats;
-    status(s?.compressed
-      ? `Bundle exported (${(zip.size / 1e6).toFixed(1)} MB) — splat compressed `
-        + `to SPZ, ${(s.originalBytes / 1e6).toFixed(0)} → `
-        + `${(s.bytes / 1e6).toFixed(0)} MB `
-        + `(${(100 - 100 * s.bytes / s.originalBytes).toFixed(0)}% smaller).`
-      : `Bundle exported (${(zip.size / 1e6).toFixed(1)} MB).`, 8000);
-  } catch (err) { fail(err); }
-};
 
 /* --------------------------------------------------------------------- loop */
 

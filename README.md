@@ -3,7 +3,7 @@
 **Site video → measurable splat scene.** A viewer for Gaussian-splat scenes of
 landscapes and sites that **measures** rather than only shows: distances,
 heights and areas at a real-world scale, section boxes, annotations and saved
-viewpoints — and an export that runs on any web page.
+viewpoints — and still images of any of it, ready to hand in.
 
 Behind it sits an optional **generator** that turns a walked phone video into
 the scene itself, and into a measurable mesh and a ground-only terrain model.
@@ -21,8 +21,10 @@ the terrain models this tool writes into laser sheets,
 **What you need:** a splat scene — `.ply`, `.spz`, `.splat`, `.ksplat` or `.sog`
 — from a phone scanning app, from Postshot, or from this tool's own generator.
 A plain point-cloud `.ply` opens too. You can try everything without your own
-data: the **Demo scene** button opens a synthetic landform, and **Calibration**
-opens a scene with markers at known distances.
+data: the **Samples** on the Import panel are real scenes made with this tool —
+one from a walked video, one from a single photograph — and **Test scenes**
+holds a synthetic contour landform and a measuring test with markers at known
+distances.
 
 ### On your own machine
 
@@ -38,10 +40,10 @@ not load the app's modules from a `file://` path.
 ## Your files never leave your computer
 
 The viewer makes **no network requests**. Its libraries and fonts are part of
-this repository, a scene you open is read in your browser, and an export is a
-file written on your own machine. The generator runs locally too; the one thing
-it downloads is the depth model, once, the first time you make a scene from a
-single photograph.
+this repository, a scene you open is read in your browser, and a still or a
+scene file is written on your own machine. The generator runs locally too; the
+one thing it downloads is the depth model, once, the first time you make a
+scene from a single photograph.
 
 ## What it does
 
@@ -60,7 +62,7 @@ scrolling past it.
 **Scale.** A scene reconstructed from photographs has **no real-world scale**
 until one is given, so measurements read as *units* until you set it: click two
 points and type the distance between them, or declare a scene that is already
-in metres. The scale travels with everything you save and export.
+in metres. The scale travels with the scene file and shows in every still.
 
 **Measure.** Distance, height and area, listed as you take them.
 
@@ -73,17 +75,21 @@ to.
 **Walk the capture.** A scene made by the generator knows the path the camera
 took. The viewer can fly that path, stand at any position along it, and level
 the horizon from the cameras' own sense of up. A splat scene is only faithful
-near where it was filmed from, so this is the honest way to look at one.
+near where it was filmed from, so this is the honest way to look at one. A
+scene made from one photograph has a **Photo** button instead: it stands where
+the photo was taken, with the photo's field of view, and outlines the photo's
+own rectangle — and a still saved there is exactly that rectangle.
 
-**Save and publish.** A scene file (`.dlscene`) records the scale,
-measurements, notes, viewpoints and section beside the splat. **Export web
-scene** writes a self-contained folder — the splat compressed to SPZ, typically
-80–90 % smaller — that runs on any static host and embeds with one line:
+**Save stills.** The view exactly as framed, as a PNG — as on screen, twice as
+sharp, or 4K wide — with its measurements and notes drawn in, and without the
+section box's outline. **One per viewpoint** saves a still of every saved
+viewpoint as one ZIP, which is the quick way to show several states of a scene.
+On a laptop whose graphics chip cannot hold the size asked for, the still comes
+out as large as the chip allows, and says so.
 
-```html
-<iframe src="path/to/index.html" style="width:100%;aspect-ratio:16/9;border:0"
-        allowfullscreen loading="lazy"></iframe>
-```
+**Save the scene.** A scene file (`.dlscene`) records the scale,
+measurements, notes, viewpoints and section beside the splat, so the work can
+be picked up again later.
 
 ### What a measurement means
 
@@ -106,7 +112,8 @@ setup and every stage in detail. With it running, the app gains:
   card that shows the tools' own counts and an honest time estimate.
 - **A scene from one photograph**, in seconds, using metric depth — so it opens
   already scaled. It is 2.5D: right from near the original viewpoint, stretched
-  and holed away from it. An impression, not a survey.
+  and holed away from it. An impression, not a survey — and no mesh or terrain
+  model comes from it, because one picture gives no solve to build them from.
 - **A measurable mesh** from the same capture: a dense point cloud and surface
   for Blender, QGIS or Rhino.
 - **A terrain model** of the ground alone, as a GeoTIFF that

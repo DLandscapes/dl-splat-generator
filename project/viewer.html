@@ -71,10 +71,29 @@
           <div class="meta" id="scene-meta"></div>
         </div>
       </div>
-      <div class="row">
-        <button id="demo-btn" class="ghost">Demo scene</button>
-        <button id="calib-btn" class="ghost">Calibration</button>
+      <!-- Samples: real scenes made with this tool, one from a walked video and
+           one from a single photograph, read from data/samples/samples.json
+           (tools/make_sample.py writes it). Hidden when there are none. The
+           tiles follow digital-landscapes.com: 12 px frames filled edge to
+           edge, grayscale until you reach for one, the asymmetric chip, and a
+           caption under every image. -->
+      <div id="samples" hidden>
+        <div class="samples-head">Samples</div>
+        <div id="samples-grid"></div>
       </div>
+
+      <!-- Synthetic scenes, for checking the tool rather than showing a site. -->
+      <details class="sub" id="panel-tests">
+        <summary class="subhead">Test scenes</summary>
+        <div class="sub-body">
+          <div class="meta">Synthetic, for checking the tool rather than showing a
+            site. Both are in metres by construction.</div>
+          <div class="row">
+            <button id="landform-btn" class="ghost" title="A laser-cut contour model: 0.2 m sheets on a 12 × 9 m base board">Contour landform</button>
+            <button id="calib-btn" class="ghost" title="Markers at exactly known distances — what the acceptance test measures">Measuring test</button>
+          </div>
+        </div>
+      </details>
 
       <!-- Only shown when a capture backend is present; the viewer works without one. -->
       <details class="sub" id="panel-make" hidden>
@@ -172,9 +191,10 @@
             Level the horizon</label>
           <div class="meta" id="level-note"></div>
           <label class="field">
-            <span>Detail <em id="lod-val">1.0&times;</em></span>
-            <input type="range" id="lod-scale" min="0.25" max="3" step="0.25" value="1">
+            <span>Detail <em id="lod-val">100 %</em></span>
+            <input type="range" id="lod-scale" min="0.1" max="1" step="0.05" value="1">
           </label>
+          <div class="meta" id="lod-note"></div>
           <label class="field">
             <span>Softness <em id="blur-val">0.30</em></span>
             <input type="range" id="blur" min="0" max="1" step="0.05" value="0.3">
@@ -310,9 +330,16 @@
       <h2>Terrain</h2><span class="sec-badge" id="b-mesh"></span>
     </summary>
     <div class="sec-body">
-      <div class="meta">The same capture as geometry &mdash; a dense point cloud and a
+      <div class="meta" id="mesh-intro">The same capture as geometry &mdash; a dense point cloud and a
         surface you can take into Blender, QGIS or Rhino and draw from. Nothing is
         re-captured or re-solved.</div>
+      <!-- A single-photo scene has no solve to build from: this replaces the
+           controls rather than letting a build start and fail. -->
+      <div class="meta" id="mesh-photo" hidden><b>Not for a scene from one
+        photograph.</b> Its depth is estimated from a single picture, not measured
+        from several, so there is no capture to build a mesh or terrain model
+        from. Make the scene from a video or a set of photos to get one.</div>
+      <div id="mesh-controls">
       <label class="field">
         <span>Quality <em id="mesh-quality-note">&mdash;</em></span>
         <select id="mesh-quality">
@@ -333,6 +360,7 @@
         <button id="mesh-show" class="ghost" hidden>Show the cloud</button>
       </div>
       <div class="meta" id="mesh-state"></div>
+      </div>
 
       <!-- The last step: ground out of the cloud, and a terrain raster that
            DL-TerrainSlicer opens directly. Only offered once a cloud exists. -->
@@ -382,7 +410,7 @@
         </div>
       </details>
 
-      <div class="meta keys"><b>Two honest limits.</b> The result is in COLMAP
+      <div class="meta keys" id="mesh-limits"><b>Two honest limits.</b> The result is in COLMAP
         units until you calibrate against something of known size &mdash; the right
         shape, the wrong size. And a camera only reconstructs what it sees, so
         where planting hides the ground you get the top of the planting, not the
@@ -397,6 +425,32 @@
       <h2>Export</h2><span class="sec-badge" id="b-export"></span>
     </summary>
     <div class="sec-body">
+      <!-- A still is what a student hands in, so it comes first here. It is
+           captured by the WebGL renderer itself, so it works on every laptop
+           the viewer runs on. -->
+      <details class="sub" id="panel-still" hidden>
+        <summary class="subhead">Still image</summary>
+        <div class="sub-body">
+          <label class="field">
+            <span>Size <em id="still-size-note">&mdash;</em></span>
+            <select id="still-size">
+              <option value="screen" selected>As on screen</option>
+              <option value="2x">Twice as sharp</option>
+              <option value="3840">4K wide &mdash; 3840 px</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="still-overlay" checked>
+            Include measurements and notes</label>
+          <div class="row">
+            <button id="still-go" class="ghost">Save a still</button>
+            <button id="still-views" class="ghost">One per viewpoint</button>
+          </div>
+          <div class="meta" id="still-state">The view exactly as framed, without
+            the section box's outline. <b>One per viewpoint</b> saves a still of
+            every saved viewpoint, as one ZIP.</div>
+        </div>
+      </details>
+
       <details class="sub" id="panel-scene" hidden>
         <summary class="subhead">Scene file</summary>
         <div class="sub-body">
@@ -404,9 +458,6 @@
             <button id="scene-save" class="ghost">Save .dlscene</button>
             <button id="scene-load" class="ghost">Load .dlscene</button>
           </div>
-          <button id="scene-export" class="ghost">Export web scene&hellip;</button>
-          <div class="meta">A self-contained folder that runs on any static host
-            and embeds via iframe.</div>
         </div>
       </details>
 
@@ -528,6 +579,15 @@
        new tab like the sidebar mark. The logo IS the mark; the formal copyright
        notice lives in the LICENCE and the sidebar footer. Bottom LEFT is taken
        by the capture pill, so it sits opposite. -->
+  <!-- A sample's caption, the way every image on digital-landscapes.com has
+       one: what it is, where and when, how it was made. Above the brandmark,
+       clear of the capture pill and of the floating window. -->
+  <div id="sample-card" hidden>
+    <button id="sample-card-close" class="link" title="Hide the caption">&times;</button>
+    <div class="sample-kicker" id="sample-kicker"></div>
+    <div class="sample-title" id="sample-title"></div>
+    <div class="sample-meta" id="sample-meta"></div>
+  </div>
   <a id="brandmark" href="https://digital-landscapes.com/" target="_blank" rel="noopener">
     <img src="static/logo-dl.png" alt="">
     <span>Digital Landscapes</span>

@@ -100,6 +100,18 @@ def status(name: str) -> dict:
             cand = record.parent / rec["ply"]
             splat = cand if cand.is_file() else None
 
+    # A scene from ONE photograph has no solve, no camera path and no video,
+    # which is everything this package is made of. Say that in one sentence,
+    # instead of listing the four missing pieces as if they could be fixed.
+    if record.is_file() and rec.get("method") == "single-image metric depth":
+        return {"name": name, "ready": False, "singlePhoto": True,
+                "exporter": str(script) if script else None,
+                "blocking": ["this scene was made from one photograph, and the "
+                             "Blender package is built from a video's camera "
+                             "path — a Blender file for photo scenes is not "
+                             "available yet"],
+                "warnings": [], "exists": False, "splat": None}
+
     blocking = []
     if script is None:
         blocking.append(

@@ -1,8 +1,8 @@
 // Generates the bundled test scenes, in the standard INRIA 3DGS .ply layout
 // (binary_little_endian, float properties):
 //
-//   data/demo.ply         synthetic island terrain, trees and cloud -- something
-//                         to look at that exercises colour, opacity and depth
+//   data/landform.ply     a laser-cut contour model of a landform: greyboard
+//                         sheets on a base board, metric (see buildLandform)
 //   data/calibration.ply  markers at exactly known separations, plus a rectangle
 //                         of known area, so measurement accuracy is testable
 //                         rather than eyeballed
@@ -11,16 +11,18 @@
 // Both are authored in the COLMAP-style Y-down convention that real 3DGS
 // captures use, so the viewer's default "flip up-axis" renders them upright.
 //
-// Run: node make_demo.mjs
+// Run: node make_demo.mjs [output folder]     (default: ../data/)
 import { writeFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SH_C0 = 0.28209479177387814;
 const logit = (a) => Math.log(a / (1 - a));
 const dc = (c) => (c - 0.5) / SH_C0;
 
-const OUT = new URL("../data/", import.meta.url);
+const OUT = process.argv[2]
+  ? pathToFileURL(resolve(process.argv[2]) + sep)
+  : new URL("../data/", import.meta.url);
 
 // deterministic PRNG, so regenerating gives byte-identical files
 let seed = 1234567;
@@ -34,100 +36,93 @@ function push(list, { x, y, z, r, g, b, a = 0.95, sx, sy, sz }) {
   list.push({ x, y: -y, z: -z, r, g, b, a, sx, sy, sz, qw: 1, qx: 0, qy: 0, qz: 0 });
 }
 
-/* ------------------------------------------------------------ demo terrain */
+/* --------------------------------------------------------- contour landform */
 
-const GRID = 64;
-const noise = [];
-for (let o = 0; o < 4; o++) {
-  const g = new Float32Array((GRID + 2) * (GRID + 2));
-  for (let i = 0; i < g.length; i++) g[i] = rand();
-  noise.push(g);
-}
-function sampleOctave(g, x, y) {
-  const xi = Math.floor(x), yi = Math.floor(y);
-  const xf = x - xi, yf = y - yi;
-  const sx = xf * xf * (3 - 2 * xf), sy = yf * yf * (3 - 2 * yf);
-  const idx = (i, j) => g[((j % GRID) + GRID) % GRID * (GRID + 2) + ((i % GRID) + GRID) % GRID];
-  const a = idx(xi, yi), b = idx(xi + 1, yi), c = idx(xi, yi + 1), d = idx(xi + 1, yi + 1);
-  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
-}
-function height(x, z) {
-  let h = 0, amp = 1, freq = 0.35, norm = 0;
-  for (let o = 0; o < 4; o++) {
-    h += amp * sampleOctave(noise[o], (x + 20) * freq, (z + 20) * freq);
-    norm += amp;
-    amp *= 0.5; freq *= 2.1;
-  }
-  h /= norm;
-  const r = Math.hypot(x, z);
-  return h * 2.2 * Math.max(0, 1 - (r / 7.5) ** 2) - 0.35; // island falloff
+// A laser-cut contour model, as DL-TerrainSlicer cuts them: a landform stacked
+// from sheets of greyboard on a white base board, each sheet a flat terrace
+// with a dark, laser-burnt cut edge. It replaced a synthetic island on
+// 2026-09-24: the island (sea, sand, trees, clouds) looked like a game, and
+// this is the house's own language -- the thing the tool's terrain models end
+// up as. Metric: 12 x 9 m, 0.2 m sheets, 1 unit = 1 m.
+//
+// It has its OWN random stream, so it can change without moving a single byte
+// of calibration.ply -- which the acceptance test depends on.
+
+let landSeed = 20260924;
+function landRand() {
+  landSeed = (landSeed * 1664525 + 1013904223) >>> 0;
+  return landSeed / 4294967296;
 }
 
-function buildDemo() {
+const SHEET = 0.2;                         // sheet thickness, m
+const PLATE = { x0: -6, x1: 6, z0: -4.5, z1: 4.5 };
+const STEP = 0.045;                        // splat spacing on the terraces, m
+
+const bump = (x, z, cx, cz, sx, sz) =>
+  Math.exp(-(((x - cx) ** 2) / (2 * sx * sx) + ((z - cz) ** 2) / (2 * sz * sz)));
+
+/** Ground height before it is cut into sheets: two summits, a saddle between
+ *  them and a shallow valley running out to the front edge. */
+function landHeight(x, z) {
+  const h = 2.5 * bump(x, z, -1.7, -0.5, 2.3, 1.9)
+          + 1.5 * bump(x, z, 2.9, 1.3, 1.6, 1.4)
+          + 0.5 * bump(x, z, 0.6, 0.4, 1.2, 2.6)
+          - 0.45 * bump(x, z, 0.8, -3.2, 0.9, 2.4)
+          + 0.12 * Math.sin(x * 1.3 + 0.4) * Math.cos(z * 1.1 - 0.2);
+  // fade to the base board before the plate's edge, as a cut model does
+  const edge = Math.min(x - PLATE.x0, PLATE.x1 - x, z - PLATE.z0, PLATE.z1 - z);
+  return Math.max(0, h * Math.min(1, Math.max(0, (edge - 0.3) / 1.2)));
+}
+
+function buildLandform() {
   const out = [];
-  const WATER = 0.02;
-  const N = 230, EXT = 5, cell = (2 * EXT) / N;
+  const nx = Math.round((PLATE.x1 - PLATE.x0) / STEP);
+  const nz = Math.round((PLATE.z1 - PLATE.z0) / STEP);
+  const level = (i, j) => Math.floor(landHeight(PLATE.x0 + (i + 0.5) * STEP,
+                                                PLATE.z0 + (j + 0.5) * STEP) / SHEET);
+  const levels = [];
+  for (let i = 0; i < nx; i++) {
+    levels.push([]);
+    for (let j = 0; j < nz; j++) levels[i].push(level(i, j));
+  }
+  const at = (i, j) => (i < 0 || j < 0 || i >= nx || j >= nz ? -1 : levels[i][j]);
 
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < N; j++) {
-      const x = -EXT + (i + 0.5 + (rand() - 0.5) * 0.7) * cell;
-      const z = -EXT + (j + 0.5 + (rand() - 0.5) * 0.7) * cell;
-      let h = height(x, z);
-      let r, g, b, sy;
-      if (h < WATER) {
-        const depth = Math.min(1, (WATER - h) * 2.5);
-        r = 0.10 - 0.04 * depth; g = 0.35 - 0.13 * depth; b = 0.55 - 0.12 * depth;
-        h = WATER; sy = 0.012;
-      } else {
-        const t = Math.min(1, (h - WATER) / 1.6); // 0 shore .. 1 peak
-        const n = (rand() - 0.5) * 0.06;
-        if (t < 0.06) { r = 0.78 + n; g = 0.72 + n; b = 0.52 + n; }              // sand
-        else if (t < 0.45) { r = 0.22 + 0.3 * t + n; g = 0.46 + 0.2 * t + n; b = 0.20 + n; }
-        else if (t < 0.75) { r = 0.42 + n; g = 0.38 + n; b = 0.34 + n; }         // rock
-        else { r = 0.92 + n; g = 0.93 + n; b = 0.95 + n; }                       // snow
-        sy = 0.02 + 0.03 * rand();
+  // board tones: a white base board, then greyboard alternating very slightly
+  // sheet to sheet, the way two batches of board never quite match
+  const tone = (k) => (k === 0 ? [0.88, 0.87, 0.84]
+    : k % 2 ? [0.70, 0.68, 0.64] : [0.735, 0.715, 0.675]);
+  const EDGE = [0.30, 0.28, 0.26];         // the laser-burnt cut edge
+
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < nz; j++) {
+      const k = levels[i][j];
+      const x = PLATE.x0 + (i + 0.5) * STEP, z = PLATE.z0 + (j + 0.5) * STEP;
+      const [r, g, b] = tone(k);
+      const n = (landRand() - 0.5) * 0.03;  // board fibre
+      push(out, {
+        x: x + (landRand() - 0.5) * STEP * 0.3, y: k * SHEET, z: z + (landRand() - 0.5) * STEP * 0.3,
+        r: r + n, g: g + n, b: b + n, a: 0.97,
+        sx: STEP * 0.78, sy: 0.004, sz: STEP * 0.78,
+      });
+      // a cut edge wherever a neighbour sits lower: a vertical strip of splats
+      // on the boundary, from the neighbour's sheet up to this one's
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const kn = at(i + di, j + dj);
+        if (kn >= k) continue;
+        const bottom = kn < 0 ? -SHEET : kn * SHEET, top = k * SHEET;
+        const steps = Math.max(1, Math.ceil((top - bottom) / 0.03));
+        for (let s = 0; s < steps; s++) {
+          const y = bottom + (s + 0.5) * (top - bottom) / steps;
+          const e = (landRand() - 0.5) * 0.03;
+          push(out, {
+            x: x + di * STEP * 0.5, y, z: z + dj * STEP * 0.5,
+            r: EDGE[0] + e, g: EDGE[1] + e, b: EDGE[2] + e, a: 0.97,
+            sx: di ? 0.004 : STEP * 0.62, sy: (top - bottom) / steps * 0.62,
+            sz: dj ? 0.004 : STEP * 0.62,
+          });
+        }
       }
-      push(out, {
-        x, y: h, z, r, g, b, a: 0.92,
-        sx: cell * (0.7 + rand() * 0.5), sy, sz: cell * (0.7 + rand() * 0.5),
-      });
     }
-  }
-
-  let trees = 0;
-  while (trees < 260) {
-    const x = (rand() * 2 - 1) * 4.6;
-    const z = (rand() * 2 - 1) * 4.6;
-    const h = height(x, z);
-    const t = (h - WATER) / 1.6;
-    if (t < 0.08 || t > 0.5) continue;
-    trees++;
-    const treeH = 0.16 + rand() * 0.22;
-    push(out, {
-      x, y: h + treeH * 0.35, z,
-      r: 0.32, g: 0.24, b: 0.16, a: 0.9,
-      sx: 0.014, sy: treeH * 0.4, sz: 0.014,
-    });
-    const shade = 0.75 + rand() * 0.5;
-    for (let k = 0; k < 3; k++) {
-      const f = k / 2;
-      push(out, {
-        x: x + (rand() - 0.5) * 0.03,
-        y: h + treeH * (0.55 + 0.45 * f),
-        z: z + (rand() - 0.5) * 0.03,
-        r: 0.10 * shade, g: 0.34 * shade, b: 0.12 * shade, a: 0.85,
-        sx: treeH * 0.42 * (1 - 0.28 * f), sy: treeH * 0.3,
-        sz: treeH * 0.42 * (1 - 0.28 * f),
-      });
-    }
-  }
-
-  for (let i = 0; i < 40; i++) {
-    push(out, {
-      x: (rand() * 2 - 1) * 5.5, y: 2.2 + rand() * 0.9, z: (rand() * 2 - 1) * 5.5,
-      r: 0.95, g: 0.96, b: 0.99, a: 0.22 + rand() * 0.2,
-      sx: 0.5 + rand() * 0.7, sy: 0.08 + rand() * 0.08, sz: 0.35 + rand() * 0.5,
-    });
   }
   return out;
 }
@@ -188,7 +183,13 @@ function marker(out, [x, y, z], [r, g, b]) {
   }
 }
 
+// The state the stream was in when this scene was first generated, after a
+// synthetic island (removed 2026-09-24) had drawn from it. Starting here keeps
+// calibration.ply byte-identical to the file the acceptance test was built on.
+const CALIBRATION_SEED = 3834015543;
+
 function buildCalibration() {
+  seed = CALIBRATION_SEED;
   const out = [];
   // flat, lightly mottled ground with a faint metre grid, so the known spacing
   // is legible on sight
@@ -251,9 +252,9 @@ function writePly(splats, url) {
   return headerBytes.length + body.length;
 }
 
-const demo = buildDemo();
-let bytes = writePly(demo, new URL("demo.ply", OUT));
-console.log(`demo.ply         ${demo.length} splats, ${(bytes / 1e6).toFixed(2)} MB`);
+const land = buildLandform();
+let bytes = writePly(land, new URL("landform.ply", OUT));
+console.log(`landform.ply     ${land.length} splats, ${(bytes / 1e6).toFixed(2)} MB`);
 
 const calib = buildCalibration();
 bytes = writePly(calib, new URL("calibration.ply", OUT));

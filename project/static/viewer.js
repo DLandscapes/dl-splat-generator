@@ -21,6 +21,10 @@ const SPLAT_EXTS = ["ply", "spz", "splat", "ksplat", "sog", "zip"];
 // and on a small scene that costs picking accuracy for no visible gain.
 const LOD_THRESHOLD = 1_000_000;
 
+// In the photo view the photo's rectangle fills this share of the viewport
+// along whichever side limits it, so its outline stays visible as a frame.
+const PHOTO_FILL = 0.92;
+
 export class Viewer {
   constructor(canvas, overlayEl) {
     this.canvas = canvas;
@@ -45,6 +49,7 @@ export class Viewer {
     this.mesh = null;
     this.flip = true;
     this.splatCount = 0;
+    this.hasLod = false;       // true once a level-of-detail tree exists for the scene
     this.fileType = null;
 
     this._edit = null;
@@ -74,6 +79,24 @@ export class Viewer {
     this._walk = null;
     this.onFrame = null;
     this.onPick = null;
+
+    /* The photo view. A scene made from ONE photograph was unprojected from a
+     * single camera at the origin, looking down its +Z, with a known
+     * horizontal field of view -- so "where the photo was taken" is exact, not
+     * estimated. The view stands there with the photo's own field of view and
+     * outlines the photo's rectangle; any drag or zoom leaves it. */
+    this.photoCamera = null;   // { hfov: degrees, aspect: width / height }
+    this.photoView = false;
+    this._lastNow = 0;
+    if (overlayEl?.parentElement) {
+      const mask = document.createElement("div");
+      mask.className = "photo-mask";
+      this._frameEl = document.createElement("div");
+      this._frameEl.className = "photo-frame";
+      this._frameEl.hidden = true;
+      mask.appendChild(this._frameEl);
+      overlayEl.parentElement.insertBefore(mask, overlayEl);
+    }
 
     this._initControls();
     this._resize();
@@ -170,9 +193,11 @@ export class Viewer {
     await mesh.initialized;
     this.splatCount = mesh.packedSplats?.numSplats ?? mesh.splats?.getNumSplats?.() ?? 0;
 
+    this.hasLod = false;
     if (this.splatCount >= LOD_THRESHOLD) {
       try {
         await mesh.createLodSplats();
+        this.hasLod = true;
       } catch (err) {
         // LOD is an optimisation; a scene that renders every splat is still correct
         console.warn("LOD tree could not be built, rendering at full detail:", err);
@@ -206,6 +231,9 @@ export class Viewer {
       this.mesh = null;
     }
     this.splatCount = 0;
+    this.hasLod = false;
+    this.photoCamera = null;
+    this.photoView = false;
     this.bounds = null;
     this._robustLocal = null;
   }
@@ -256,6 +284,7 @@ export class Viewer {
   fitView() {
     const box = this.frameBounds();
     if (!box) return;
+    this.photoView = false;
     const size = box.getSize(new THREE.Vector3());
     const centre = box.getCenter(new THREE.Vector3());
     const radius = Math.max(size.length() * 0.5, 1e-3);
@@ -449,6 +478,97 @@ export class Viewer {
     return true;
   }
 
+  /* ------------------------------------------------------------ photo view */
+
+  /** Adopt a single photograph's camera: `{ hfov, aspect }`, or null. */
+  setPhotoCamera(p) {
+    this.photoView = false;
+    this.photoCamera = p && p.hfov > 0 && p.aspect > 0
+      ? { hfov: p.hfov, aspect: p.aspect } : null;
+  }
+
+  /**
+   * The photo's width / height, read back from the splats, for photo scenes
+   * recorded before capture.json carried the image size. Every splat was
+   * unprojected from one pixel, so x/z and y/z span the photo's frustum
+   * exactly: their extremes are tan(hfov/2) and tan(vfov/2).
+   */
+  photoAspectFromSplats() {
+    const splats = this.mesh?.packedSplats;
+    if (!splats) return 0;
+    let mx = 0, my = 0;
+    splats.forEachSplat((i, c) => {
+      if (c.z > 1e-6) {
+        mx = Math.max(mx, Math.abs(c.x / c.z));
+        my = Math.max(my, Math.abs(c.y / c.z));
+      }
+    });
+    return mx > 0 && my > 0 ? mx / my : 0;
+  }
+
+  /** Stand where the photograph was taken. */
+  enterPhotoView(animate = true) {
+    if (!this.mesh || !this.photoCamera) return false;
+    this.stopWalk();
+    this.mesh.updateMatrixWorld(true);
+    const eye = new THREE.Vector3(0, 0, 0).applyMatrix4(this.mesh.matrixWorld);
+    const dir = new THREE.Vector3(0, 0, 1).transformDirection(this.mesh.matrixWorld);
+    // pivot on the view axis, level with the scene centre, so orbiting away
+    // from here turns about what the photo shows
+    const box = this.frameBounds();
+    const centre = box ? box.getCenter(new THREE.Vector3()) : eye.clone().add(dir);
+    const t = Math.max(centre.clone().sub(eye).dot(dir), 1e-2);
+    const target = eye.clone().addScaledVector(dir, t);
+    this.setCameraState({ ...this._orbitFrom(eye, target), target: target.toArray() },
+      animate);
+    this.photoView = true;           // after setCameraState, which clears it
+    return true;
+  }
+
+  leavePhotoView() { this.photoView = false; }
+
+  /** The vertical field of view that fits the photo's frustum in the viewport. */
+  _photoFovY() {
+    const p = this.photoCamera;
+    const th = Math.tan(THREE.MathUtils.degToRad(p.hfov) / 2);
+    const fit = Math.max(th / p.aspect, th / this.camera.aspect) / PHOTO_FILL;
+    return THREE.MathUtils.radToDeg(2 * Math.atan(fit));
+  }
+
+  /** The photo's rectangle in canvas CSS pixels while in the photo view, else null. */
+  photoFrameRect() {
+    if (!this.photoView || !this.photoCamera) return null;
+    const W = this.canvas.clientWidth, H = this.canvas.clientHeight;
+    if (!W || !H) return null;
+    const T = Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2);
+    const th = Math.tan(THREE.MathUtils.degToRad(this.photoCamera.hfov) / 2);
+    const w = Math.min(W, (th / (T * this.camera.aspect)) * W);
+    const h = Math.min(H, (th / this.photoCamera.aspect / T) * H);
+    return { x: (W - w) / 2, y: (H - h) / 2, w, h };
+  }
+
+  /* The field of view eases between the photo's and the ordinary one, so
+   * leaving the photo view is a quick widening rather than a jump. */
+  _tickFov(now) {
+    const dt = Math.min(0.1, Math.max(0, (now - (this._lastNow || now)) / 1000));
+    this._lastNow = now;
+    const goal = this.photoView && this.photoCamera ? this._photoFovY() : FOV_Y;
+    const d = goal - this.camera.fov;
+    if (Math.abs(d) > 1e-3) {
+      this.camera.fov = Math.abs(d) < 0.05 ? goal : this.camera.fov + d * Math.min(1, dt * 12);
+      this.camera.updateProjectionMatrix();
+    }
+    if (this._frameEl) {
+      const r = this.photoFrameRect();
+      this._frameEl.hidden = !r;
+      if (r) {
+        const st = this._frameEl.style;
+        st.left = `${r.x}px`; st.top = `${r.y}px`;
+        st.width = `${r.w}px`; st.height = `${r.h}px`;
+      }
+    }
+  }
+
   /**
    * Jump to an axis-aligned view, keeping the current pivot and distance.
    *
@@ -508,7 +628,23 @@ export class Viewer {
     this.mesh.updateMatrixWorld(true);
   }
 
-  setLodScale(v) { this.spark.lodSplatScale = v; }
+  /* Detail = the share of the scene's splats Spark may draw at once. It only
+   * bites on a scene with a level-of-detail tree; without one every splat is
+   * drawn regardless. null means this computer's default: Spark's own budget
+   * for the device (2.5 M on a desktop, 1.5 M on a Mac, less on a phone), which
+   * is ALL of most scenes. The old control scaled that budget instead, so on a
+   * desktop anything above 1x changed nothing and a small scene never changed
+   * at all. */
+  defaultDetail() {
+    if (!this.hasLod || !this.splatCount) return 1;
+    return Math.min(1, this.spark.defaultSplatTarget() / this.splatCount);
+  }
+  setDetail(share) {
+    this.spark.lodSplatScale = 1;
+    this.spark.lodSplatCount = share == null || !this.hasLod
+      ? undefined
+      : Math.max(1, Math.round(Math.min(1, share) * this.splatCount));
+  }
   setBlur(v) { this.spark.blurAmount = v; }
 
   /* ---------------------------------------------------------------- camera */
@@ -550,6 +686,7 @@ export class Viewer {
   }
 
   setCameraState(s, animate = false) {
+    this.photoView = false;          // any other view leaves the photo's
     const to = {
       yaw: s.yaw, pitch: s.pitch, dist: s.dist,
       target: new THREE.Vector3().fromArray(s.target),
@@ -605,6 +742,7 @@ export class Viewer {
       const dx = e.clientX - lastX, dy = e.clientY - lastY;
       lastX = e.clientX; lastY = e.clientY;
       moved += Math.abs(dx) + Math.abs(dy);
+      if (moved > 4) this.photoView = false;   // a drag leaves the photo view
       if (panning) {
         const k = this._cam.dist * 0.0015;
         const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 0);
@@ -666,6 +804,7 @@ export class Viewer {
    * scroll forever on a large scan and never arrive.
    */
   zoomAt(ndcX, ndcY, deltaY) {
+    this.photoView = false;
     this._anim = null;
     const anchor = this._zoomAnchor(ndcX, ndcY);
     if (anchor) {
@@ -853,6 +992,96 @@ export class Viewer {
     return s;
   }
 
+  /* ----------------------------------------------------------------- still */
+
+  /**
+   * The current view as an image: same framing and aspect as on screen, at
+   * `width` pixels wide (0 = the screen's own resolution). Returns a 2D canvas.
+   *
+   * Three things make this more than a toDataURL():
+   *
+   * - SIZE BY PIXEL RATIO, not by resizing the canvas. Only the pixel density
+   *   changes, so the still frames exactly what is on screen whatever its size.
+   * - CLAMPED TO THE GPU. A student's old laptop may not hold a 4K render
+   *   target, and asking for one can lose the WebGL context -- the one failure
+   *   this tool must never cause. The size is capped at the chip's own
+   *   MAX_RENDERBUFFER_SIZE / MAX_VIEWPORT_DIMS, and the caller is told what it
+   *   actually got.
+   * - SETTLED, not grabbed. Spark sorts and refines on its own schedule, so the
+   *   first frame after a change can be a state behind, or a buffer cleared but
+   *   not yet drawn -- which the section-box test found reads as an empty
+   *   scene. It renders until two successive frames agree, and refuses to hand
+   *   back an empty image.
+   *
+   * Scaffolding (the section box's grey outline) is hidden for the capture: a
+   * still shows the cut, not the tool that made it -- the same rule exports
+   * follow. Timers rather than requestAnimationFrame drive the settling, so it
+   * also completes in a tab the browser is throttling.
+   */
+  async captureStill({ width = 0, hideScaffolding = true } = {}) {
+    if (!this.mesh) throw new Error("open a scene first");
+    const cssW = this.canvas.clientWidth, cssH = this.canvas.clientHeight;
+    if (!cssW || !cssH) throw new Error("the viewport has no size to capture");
+
+    const gl = this.renderer.getContext();
+    const dims = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
+    const maxDim = Math.min(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), dims[0], dims[1]);
+    const screenRatio = this.renderer.getPixelRatio();
+    const asked = width > 0 ? width / cssW : screenRatio;
+    const ratio = Math.min(asked, maxDim / cssW, maxDim / cssH);
+
+    const helper = this._sectionHelper;
+    const helperWas = helper ? helper.visible : false;
+    if (hideScaffolding && helper) helper.visible = false;
+    this.renderer.setPixelRatio(ratio);
+    this.renderer.setSize(cssW, cssH, false);
+
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    // a 48 x 27 thumbnail is plenty to tell whether two frames agree
+    const probe = document.createElement("canvas");
+    probe.width = 48; probe.height = 27;
+    const pctx = probe.getContext("2d", { willReadFrequently: true });
+    const fingerprint = () => {
+      pctx.drawImage(this.canvas, 0, 0, probe.width, probe.height);
+      const px = pctx.getImageData(0, 0, probe.width, probe.height).data;
+      let sum = 0, lit = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        sum = (sum * 31 + px[i] + px[i + 1] * 7 + px[i + 2] * 13) >>> 0;
+        if (px[i] > 30 || px[i + 1] > 30 || px[i + 2] > 34) lit++;   // not the stage
+      }
+      return { sum, lit };
+    };
+
+    try {
+      const out = document.createElement("canvas");
+      let last = null;
+      for (let i = 0; i < 24; i++) {
+        await wait(i < 3 ? 60 : 120);
+        if (gl.isContextLost()) {
+          throw new Error("the graphics chip gave up at this size — try a smaller one");
+        }
+        // Render and copy in the SAME task: a WebGL canvas is only readable
+        // until the browser composites it.
+        this.renderer.render(this.scene, this.camera);
+        const f = fingerprint();
+        if (f.lit > 0 && last && f.sum === last.sum) {
+          out.width = this.canvas.width;
+          out.height = this.canvas.height;
+          out.getContext("2d").drawImage(this.canvas, 0, 0);
+          out.stillInfo = { width: out.width, height: out.height,
+                            clamped: asked > ratio + 1e-6, maxDim };
+          return out;
+        }
+        last = f;
+      }
+      throw new Error("the view would not settle into a still — try again");
+    } finally {
+      this.renderer.setPixelRatio(screenRatio);
+      this.renderer.setSize(cssW, cssH, false);
+      if (helper) helper.visible = helperWas;
+    }
+  }
+
   /* ------------------------------------------------------------------ loop */
 
   _resize() {
@@ -883,6 +1112,7 @@ export class Viewer {
     this._resize();
     this._tickAnim(now);
     this._tickWalk(now);
+    this._tickFov(now);
     this.renderer.render(this.scene, this.camera);
 
     this._fpsFrames++;

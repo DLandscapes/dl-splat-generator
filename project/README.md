@@ -3,8 +3,8 @@
 Site captures into measurable 3D scenes, for landscape architecture. Make a
 Gaussian-splat scene from a phone video, a folder of stills or a single photo;
 set its real-world scale; measure and annotate it; walk the path it was filmed
-from; and hand it on — as a self-contained bundle that embeds in a web page, or
-as a package the Capture Walk add-on opens in Blender.
+from; save stills of it; and hand it on as a package the Capture Walk add-on
+opens in Blender.
 
 This is the **technical reference**: how each stage works, why, and what was
 measured. For what the tool is and how to start, see the
@@ -14,9 +14,12 @@ Named `DL-3DGS` until 2026-09-06; renamed to match the other Digital Landscapes
 tools — `DL-TerrainMapper`, `DL-TerrainSlicer`, `DL-TerrainDiversity`.
 
 The **viewer half is entirely client-side** — no server logic, no build step, no
-network requests — so an exported scene drops straight into
-digital-landscapes.com. Python appears only in the generator half, where local
-GPU training genuinely needs it.
+network requests. Python appears only in the generator half, where local GPU
+training genuinely needs it.
+
+(An **Export web scene** bundle — the scene, its splat as SPZ and a read-only
+shell for a static host, embeddable by iframe — was removed on 2026-09-24 at
+Marc's request. It is in the git history at `43b4826` and earlier.)
 
 ## Running it
 
@@ -63,9 +66,8 @@ static/
   app.js               UI wiring
   viewer.js            render layer — wraps Spark, owns camera, picking, framing
   tools.js             scale calibration, measurement, annotations, viewpoints
-  scene.js             .dlscene sidecar + ZIP writer for the export bundle
+  scene.js             .dlscene sidecar, download helper, ZIP writer
   ply.js               PLY header inspection and point-cloud parsing
-  embed.js             read-only shell used by exported bundles
   style.css            DL theme, DARK: the family's tokens with dark values,
                        because splats read best against a dark stage
   fonts/               Source Sans 3 and Quattrocento Sans, SIL OFL, texts alongside
@@ -84,20 +86,63 @@ tools/
   inspect_ply.mjs      layout, SH degree and extent of a splat file
   to_spz.mjs           PLY -> SPZ
   make_demo.mjs        generates the bundled test scenes
+  make_sample.py       turns a scene made here into a sample (see below)
   acceptance.html      measurement acceptance test (see below)
   smoke_capture.py     the generator's end-to-end gate
   sparse_model_test.py regression test for the sparse-model choice
   pose_regression.py   camera-path drift check (Tier 2)
 data/
-  demo.ply             synthetic island terrain, 53,980 splats
+  landform.ply         a laser-cut contour model, 106,726 splats (test scene)
   calibration.ply      markers at exactly known separations, 50,268 splats
   calibration.markers.json   ground truth for the acceptance test
+  samples/             real scenes offered on the Import panel, when there are
+                       any: samples.json + one folder per sample
 reference/
   v1-single-file.html  the original hand-written WebGL2 renderer
 ```
 
 Regenerate the test scenes with `node tools/make_demo.mjs` (deterministic —
-the same bytes every run).
+the same bytes every run). The contour landform replaced a synthetic island on
+2026-09-24; the calibration scene starts its random stream from the state the
+island left behind, so `calibration.ply` is still byte-identical to the file
+the acceptance test was built on (checked by SHA-256).
+
+## Samples and test scenes
+
+The Import panel offers two kinds of ready-made scene.
+
+**Samples** are real scenes made with this tool — one from a walked video, one
+from a single photograph — shown as tiles in digital-landscapes.com's own
+grammar (12 px frames filled edge to edge, grayscale until reached for, the
+asymmetric chip, a caption under every image). A sample opens where it is
+faithful: a video at its first camera, a photo in its own frame. A caption card
+on the stage says what it is, where and when, and how it was made.
+
+They are listed in `data/samples/samples.json`, written by
+
+```bash
+python -X utf8 tools/make_sample.py <scene folder in output> --title "..." --place "..." --date 2026-09 [--note "..."]
+```
+
+which copies the scene's SPZ, its camera path (video) and a 480 × 360
+thumbnail (the photograph, or the video's first solved frame), plus the part of
+`capture.json` the viewer needs — **without** the absolute paths that file
+carries. `?samples=<same-origin url>` points the viewer at another list, which
+is how a stand-in list is tried without touching the real one.
+
+⚠ The tool does not check for people. Only Digital Landscapes' own,
+people-free material belongs in `samples/`, and a sample is looked at before it
+is committed. Keep one light by filming a **short** walk: a 31-frame clip
+trained to 218 k splats, 5.2 MB. `--max-splats` thins as a last resort and
+costs visible quality — on a dense 2 M-splat woodland at 400 k, 37–40 % of the
+pixels changed and the foreground went muddy; ranking by projected size
+instead was no better overall (28 % and 60 % at the same two cameras).
+
+**Test scenes** are synthetic and in metres by construction: the **contour
+landform** (0.2 m greyboard sheets on a 12 × 9 m base board — what DL-
+TerrainSlicer's models look like) and the **measuring test**, the acceptance
+test's own scene of markers at known distances. The measuring test proves the
+measuring tools, not a capture: it calibrates nothing.
 
 ## Navigating
 
@@ -146,6 +191,38 @@ per second, and it defaults to the speed the site was filmed at when
 `capture.json` records the source `fps` (kept frames per second = fps ÷ stride;
 30 fps at stride 3 gives 10). Older records have no `fps` and fall back to 8.
 
+### Photo view
+
+A scene made from **one photograph** was unprojected from a single camera at the
+origin, looking down +Z, with a known horizontal field of view — so where the
+photo was taken is exact, not estimated. On such a scene the navigation's
+**Camera** button reads **Photo**: it stands there, eases the field of view to
+the photo's, and outlines the photo's rectangle with everything outside it
+dimmed (the rectangle fills 92 % of the viewport along its limiting side). Any
+drag or zoom leaves the view and the field of view eases back to 60°. A still
+saved in the photo view is cropped to that rectangle, and "4K wide" applies to
+the crop.
+
+`capture.json` records the photo's size under `image` since 2026-09-24. Older
+photo scenes have the aspect read back from the splats: each was unprojected
+from one pixel, so the extremes of x/z and y/z are tan(hfov/2) and
+tan(vfov/2). Checked against the source image: aspect 1.3305 from the splats
+vs 1087 × 817 (1.3305); a still from the photo view correlates 0.60 with the
+photograph at thumbnail size, falling to 0.46–0.53 when the crop is 2 % larger
+or smaller and to 0.14 when it is shifted by 5 % — the frame is where the photo is.
+
+### Detail
+
+**Display → Detail** is the share of a scene's splats drawn at once, and only
+applies to a scene with a level-of-detail tree (1 M splats and up). It starts
+at this computer's default — Spark's own budget for the device, 2.5 M on a
+desktop, 1.5 M on a Mac, less on a phone — which is all of most scenes, and
+the note under it says how many are drawn. Lower is smoother on a slow
+computer. On a smaller scene it is disabled and says why. (Until 2026-09-24 it
+scaled Spark's budget instead, so on a desktop everything above 1× changed
+nothing, and on a small scene nothing changed at all.) Measured on a 2 M
+capture: 50 % changes 3 % of the pixels, 25 % changes 17 %, 10 % changes 34 %.
+
 ## Units
 
 A splat scene reconstructed from photographs has **no metric scale** —
@@ -160,7 +237,33 @@ they read as `m` / `m²`. Two ways to set it, both in the Scale panel:
   exported with a known scale. The bundled test scenes are authored 1 unit = 1 m,
   so this is the right button for them.
 
-The scale factor is stored in the `.dlscene` file and travels with exports.
+The scale factor is stored in the `.dlscene` file and travels with it.
+
+## Still images
+
+**Export → Still image** saves the view exactly as framed, as a PNG: as on
+screen, twice as sharp, or 3840 px wide. **One per viewpoint** saves a still of
+every saved viewpoint as one ZIP (`01-<name>.png`, `02-…`), jumping to each
+without animation and putting the view back afterwards.
+
+`Viewer.captureStill()` does three things a plain `toDataURL()` would not:
+
+- **Size by pixel ratio, not by resizing the canvas**, so the still frames
+  exactly what is on screen whatever its size.
+- **Clamped to the graphics chip.** Asking an old laptop for a 4K render target
+  can lose the WebGL context, so the size is capped at the chip's own
+  `MAX_RENDERBUFFER_SIZE` / `MAX_VIEWPORT_DIMS` and the panel says when it was.
+  Tested by lowering the reported limit to 2000 px: 2000 × 1333 came out, with
+  the message.
+- **Settled, not grabbed.** Spark sorts and refines on its own schedule, so it
+  renders until two successive frames agree, and refuses an empty image — the
+  same lesson as the section-box test.
+
+Measurements and notes are **not** in the 3D canvas — they are a DOM layer on
+top of it, so a plain capture drops them. They are redrawn onto the still from
+the same data, in the same style and the live theme's colours, at the still's
+own scale, so they stay sharp at 4K. The section box's grey outline is hidden
+for the capture: a still shows the cut, not the tool that made it.
 
 ## Scene files
 
@@ -169,34 +272,22 @@ cannot: orientation, real-world scale, measurements, annotations, viewpoints and
 the section state, plus a SHA-256 of the source so a mismatched pairing is
 caught on load.
 
-**Export web scene** writes a ZIP containing that scene, its splat file, a slim
-read-only shell and the vendored libraries — about 6.7 MB plus the splat.
-Serve the unzipped folder from any static host and embed it:
-
-```html
-<iframe src="path/to/index.html" style="width:100%;aspect-ratio:16/9;border:0"
-        allowfullscreen loading="lazy"></iframe>
-```
-
 ### SPZ compression
 
-The splat is transcoded to **SPZ** on export — Niantic's compressed format, and
-the only splat format on a formal standards track (Khronos
-`KHR_gaussian_splatting`). This is what makes a real capture publishable at all:
+The generator writes every scene it trains as **SPZ** beside the `.ply`
+(`tools/to_spz.mjs`, Spark's encoder) — Niantic's compressed format, and the
+only splat format on a formal standards track (Khronos
+`KHR_gaussian_splatting`). It is what keeps a real capture small enough to open
+quickly and to pass on:
 
 | Scene | PLY | SPZ | Saving | Transcode |
 | --- | --- | --- | --- | --- |
-| demo.ply (54k splats) | 3.0 MB | 0.5 MB | 83% | 0.1 s |
+| the island test scene (54k splats, replaced 2026-09-24) | 3.0 MB | 0.5 MB | 83% | 0.1 s |
 | generated capture (2.4M splats) | 569 MB | **55 MB** | **90%** | 18 s |
 
 Verified lossless where it counts: reloading the SPZ gives an **identical splat
 count** and a maximum geometry drift of 0.002 units on a 10-unit scene (0.02%),
 which is SPZ's quantisation.
-
-`scene.source.name` is rewritten to the `.spz` so the embed shell loads the file
-actually shipped, with the original name, size and SHA-256 kept under
-`scene.source.original` for provenance. If the transcode fails or fails to save
-space, the original file is shipped instead.
 
 ## Making splats from a video, in the app
 
@@ -259,9 +350,8 @@ at a time — a capture saturates the GPU and most of the CPU, so a second would
 make both slower.
 
 **The backend is strictly additive.** Started with plain `python launcher.py`
-(no FastAPI), you get the viewer alone and the panel stays hidden — which is
-also what an exported scene needs, since those run on any static host with no
-server at all. `--viewer-only` forces that mode.
+(no FastAPI), you get the viewer alone and the panel stays hidden.
+`--viewer-only` forces that mode.
 
 | Quality | Stride | Steps | Max splats | Rough time |
 | --- | --- | --- | --- | --- |
@@ -588,9 +678,6 @@ or on a buffer cleared but not yet drawn — which reads as an empty scene, and 
 empty scene *passes* a "content disappeared" check. It reads until the same
 non-empty count comes back twice.
 
-`embed-test.html` + `scene.json` and `iframe-test.html` exercise the exported
-embed path against the dev server without unpacking a bundle.
-
 ## A scene from one photograph
 
 **In the app:** *Make a scene → or from one photograph*. Drop a `.jpg`, `.png`
@@ -732,9 +819,9 @@ capture with a known dimension in shot.
   Note that `SplatMesh`'s own `lod: true` option loads an *empty* mesh for any
   file with no LOD tree of its own — the tree has to be built after loading.
 - Large **source** files are slow to open: a 675 MB / 3M-splat Postshot export
-  takes ~17 s, and the whole file is read into memory before parsing. Exports
-  are not affected — they are transcoded to SPZ (see *SPZ compression*), and the
-  generator writes SPZ beside every `.ply` it trains.
+  takes ~17 s, and the whole file is read into memory before parsing. Scenes
+  made here are not affected: the generator writes SPZ beside every `.ply` it
+  trains (see *SPZ compression*).
 
 ### Closed
 

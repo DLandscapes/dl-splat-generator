@@ -168,8 +168,22 @@ def mesh_status(name: str):
                    if p.suffix.lower() in IMAGE_SUFFIXES]) if images.is_dir() else 0
     views = (_dm.registered(model) if model else 0) or on_disk
 
+    # A scene from ONE photograph has no solve at all: its depth is estimated
+    # by a network, not triangulated from several views, so there is nothing
+    # for the dense pipeline to work from. Say that, instead of the generic
+    # "no solved capture ... re-run the capture", which sends people to re-run
+    # something that can never produce one.
+    single_photo = False
+    try:
+        rec = json.loads((OUTPUT / safe / "capture.json").read_text(encoding="utf-8"))
+        single_photo = rec.get("method") == "single-image metric depth"
+    except (OSError, ValueError):
+        pass
+
     blocking = []
-    if not work.is_dir():
+    if single_photo:
+        blocking.append("this scene was made from one photograph")
+    elif not work.is_dir():
         blocking.append(f"no solved capture in work\\{safe} — the intermediates "
                         f"may have been cleared; re-run the capture")
     elif model is None:
@@ -194,7 +208,7 @@ def mesh_status(name: str):
             record = None
 
     return {"name": safe, "ready": not blocking, "blocking": blocking,
-            "views": views, "framesOnDisk": on_disk,
+            "singlePhoto": single_photo, "views": views, "framesOnDisk": on_disk,
             "model": model.name if model else None,
             "estimateMinutes": minutes, "built": record,
             "cloudUrl": f"/output/{safe}/mesh/dense.ply" if record else None,

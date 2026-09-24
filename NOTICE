@@ -62,7 +62,7 @@ Quattrocento Sans
 PROGRAMS THE GENERATOR CALLS, NOT REDISTRIBUTED HERE
 ===============================================================================
 
-The VIEWER — open a splat scene, measure it, section it, export it for the web
+The VIEWER — open a splat scene, measure it, section it, save stills of it
 — needs nothing beyond the components above and runs in a browser.
 
 The GENERATOR — video to splat, dense mesh, terrain model — calls the programs
@@ -83,9 +83,12 @@ FFmpeg — frame extraction
     repository and is not relicensed by it.  https://ffmpeg.org/
 
 Depth Anything V2 (Metric, Base) — the single-photograph route
-    ⚠ Licence of the specific checkpoints not yet verified. Some Depth Anything
-    V2 checkpoints are published under a non-commercial licence. Check before
-    any release that ships or depends on this route.
+    ⚠ Checked 2026-09-24: the project's LICENSE section puts Depth Anything V2
+    Small under Apache-2.0 and Base/Large/Giant under CC-BY-NC-4.0
+    (non-commercial). This route uses the METRIC Base checkpoints, whose model
+    cards state no licence of their own; treat them as CC-BY-NC-4.0 until
+    shown otherwise. Settle before any release that ships or depends on this
+    route.
     https://github.com/DepthAnything/Depth-Anything-V2
 
 YuNet — face detection for the privacy mask, via OpenCV
@@ -139,15 +142,17 @@ The terrain-model hand-off
 DATA
 ===============================================================================
 
-This repository contains NO captured site data. The demonstration and
-calibration scenes in project/data/ are synthesised by the tool itself
+This repository contains NO captured site data, except the samples named in
+project/data/samples/samples.json, if any. The contour landform and the
+measuring test in project/data/ are synthesised by the tool itself
 (project/tools/make_demo.mjs), and the pose references in
 project/tools/reference/ are camera positions only — numbers, no imagery.
 
 Captures, and everything made from them, are deliberately kept out of version
 control: footage of a site can show people, and a scene made from it shows
-them too. A public sample scene will be added by name, only once it has been
-checked for exactly that.
+them too. A sample is Digital Landscapes' own material, added by name only
+once it has been checked for exactly that. A photograph sample is made with
+the Depth Anything V2 Metric Base checkpoint and carries its terms (above).
 
 ===============================================================================
 DEVELOPMENT

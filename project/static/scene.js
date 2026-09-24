@@ -1,66 +1,19 @@
-/* The .dlscene sidecar, and the "export web scene" bundle.
+/* The .dlscene sidecar, a download helper, and a ZIP writer.
  *
  * A .dlscene.json sits next to a splat file and records everything the viewer
  * knows that the splat file itself cannot: orientation, real-world scale,
  * measurements, annotations, viewpoints and the section state.
  *
- * The export writes a ZIP containing that scene, its splat file and a slim
- * read-only shell, so it runs from any static host and embeds in an iframe.
  * ZIP writing is done here (stored, uncompressed) to keep the app dependency
- * free -- splat files are already dense, so deflate would buy little.
+ * free; the still-image export uses it for "one per viewpoint".
+ *
+ * (An "export web scene" bundle -- the scene, its splat as SPZ and a read-only
+ * shell, for a static host -- lived here until 2026-09-24, when Marc had it
+ * removed. It is in the git history at 43b4826 and earlier.)
  */
-
-import { transcodeSpz } from "@sparkjsdev/spark";
 
 export const SCENE_FORMAT = "dlscene";
 export const SCENE_VERSION = 1;
-
-/**
- * Re-encode splat bytes as SPZ.
- *
- * SPZ is Niantic's compressed splat format -- roughly a tenth the size of PLY
- * with no visible loss, and the only splat format on a formal standards track
- * (Khronos KHR_gaussian_splatting). For an exported scene this is the
- * difference between a bundle that can sit on a web page and one that cannot:
- * a 3M-splat capture is ~570 MB as PLY.
- *
- * Returns null if the transcode fails or fails to save space, so the caller can
- * fall back to shipping the original file.
- */
-export async function toSpz(fileBytes, fileName) {
-  try {
-    const result = await transcodeSpz({
-      inputs: [{ fileBytes, pathOrUrl: fileName }],
-    });
-    const out = result?.fileBytes;
-    if (!out?.length || out.length >= fileBytes.length) return null;
-    return out;
-  } catch (err) {
-    console.warn("SPZ transcode failed, shipping the original file:", err);
-    return null;
-  }
-}
-
-/** Files copied verbatim into an exported bundle. */
-const BUNDLE_ASSETS = [
-  "static/style.css",
-  "static/viewer.js",
-  "static/ply.js",
-  "static/tools.js",
-  "static/embed.js",
-  "static/logo-dl.png",
-  "static/fonts/SourceSans3-VariableFont_wght.ttf",
-  "static/fonts/QuattrocentoSans-Regular.ttf",
-  "static/fonts/QuattrocentoSans-Bold.ttf",
-  "static/fonts/OFL.txt",
-  "static/fonts/OFL-SourceSans3.txt",
-  "static/vendor/three/three.module.min.js",
-  "static/vendor/three/three.core.min.js",
-  "static/vendor/three/addons/postprocessing/Pass.js",
-  "static/vendor/three/LICENSE",
-  "static/vendor/spark/spark.module.min.js",
-  "static/vendor/spark/LICENSE",
-];
 
 export async function sha256(buffer) {
   const digest = await crypto.subtle.digest("SHA-256", buffer);
@@ -204,119 +157,4 @@ export function makeZip(entries) {
 
   return new Blob([...parts, ...central, new Uint8Array(end.buffer)],
     { type: "application/zip" });
-}
-
-/* ---------------------------------------------------------------- export */
-
-function embedShell(title) {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${title.replace(/[<>&]/g, "")}</title>
-<link rel="stylesheet" href="static/style.css">
-<link rel="icon" href="static/logo-dl.png">
-<script type="importmap">
-{
-  "imports": {
-    "three": "./static/vendor/three/three.module.min.js",
-    "three/addons/": "./static/vendor/three/addons/",
-    "@sparkjsdev/spark": "./static/vendor/spark/spark.module.min.js"
-  }
-}
-<\/script>
-<style>
-  body { display: block; }
-  #viewport { position: fixed; inset: 0; }
-  #views {
-    position: absolute; left: 14px; bottom: 14px; display: flex; flex-wrap: wrap; gap: 6px;
-    max-width: calc(100% - 28px);
-  }
-  #views button {
-    background: rgba(253,252,249,.92); border: 1px solid var(--line);
-    font-family: var(--font-head); font-size: .78rem;
-  }
-  #title {
-    position: absolute; left: 14px; top: 14px; display: flex; align-items: center; gap: 8px;
-    background: rgba(253,252,249,.92); border: 1px solid var(--line);
-    border-radius: 6px; padding: 6px 10px;
-    font-family: var(--font-head); font-size: .85rem; color: var(--ink);
-  }
-  #title img { width: 20px; height: 20px; }
-</style>
-</head>
-<body>
-<main id="viewport">
-  <canvas id="canvas"></canvas>
-  <div id="overlay"></div>
-  <div id="title"><img src="static/logo-dl.png" alt=""><span></span></div>
-  <div id="views"></div>
-  <div id="status" class="hud" hidden></div>
-</main>
-<script type="module" src="static/embed.js"><\/script>
-</body>
-</html>
-`;
-}
-
-/**
- * Build the exported bundle. `fetchAsset` resolves an app-relative path to a
- * Uint8Array (normally a fetch against the running app).
- */
-export async function exportWebScene({ scene, splatBytes, splatName, title,
-                                       fetchAsset, compress = true,
-                                       onProgress = null }) {
-  const enc = new TextEncoder();
-  const originalName = splatName;
-  const originalSize = splatBytes.length;
-
-  if (compress && !/\.spz$/i.test(splatName)) {
-    onProgress?.("Compressing to SPZ…");
-    const spz = await toSpz(splatBytes, splatName);
-    if (spz) {
-      // The embed shell loads scene.source.name, so it has to point at the
-      // file we actually ship. The original is recorded for provenance.
-      splatBytes = spz;
-      splatName = splatName.replace(/\.[^.]+$/, "") + ".spz";
-      scene.source = {
-        ...scene.source,
-        name: splatName,
-        bytes: spz.length,
-        original: { name: originalName, bytes: originalSize,
-                    sha256: scene.source?.sha256 },
-      };
-    }
-  }
-
-  const entries = [
-    { name: "index.html", data: enc.encode(embedShell(title)) },
-    { name: "scene.json", data: enc.encode(JSON.stringify(scene, null, 2)) },
-    { name: splatName, data: splatBytes },
-    {
-      name: "README.txt",
-      data: enc.encode(
-        `${title}\n\n` +
-        "Exported from DL-SplatGenerator.\n\n" +
-        "Serve this folder over HTTP (it will not run from a file:// URL, as\n" +
-        "browsers block ES modules there), then embed it with:\n\n" +
-        `  <iframe src="path/to/index.html" style="width:100%;aspect-ratio:16/9;border:0"\n` +
-        `          allowfullscreen loading="lazy"></iframe>\n\n` +
-        "Bundled: three.js and Spark, both MIT -- see static/vendor/*/LICENSE.\n"),
-    },
-  ];
-  onProgress?.("Collecting viewer files…");
-  for (const path of BUNDLE_ASSETS) {
-    entries.push({ name: path, data: await fetchAsset(path) });
-  }
-  onProgress?.("Packing…");
-  const zip = makeZip(entries);
-  zip.splatStats = {
-    name: splatName,
-    bytes: splatBytes.length,
-    originalName,
-    originalBytes: originalSize,
-    compressed: splatName !== originalName,
-  };
-  return zip;
 }
