@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<!-- Mirrors the shell that exportWebScene() writes as index.html, so the embed
+     path can be exercised from the dev server without unpacking a bundle. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calibration site (embed test)</title>
+<link rel="stylesheet" href="static/style.css">
+<link rel="icon" href="static/logo-dl.png">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./static/vendor/three/three.module.min.js",
+    "three/addons/": "./static/vendor/three/addons/",
+    "@sparkjsdev/spark": "./static/vendor/spark/spark.module.min.js"
+  }
+}
+</script>
+<style>
+  body { display: block; }
+  #viewport { position: fixed; inset: 0; }
+  #views {
+    position: absolute; left: 14px; bottom: 14px; display: flex; flex-wrap: wrap; gap: 6px;
+    max-width: calc(100% - 28px);
+  }
+  #views button {
+    background: rgba(253,252,249,.92); border: 1px solid var(--line);
+    font-family: var(--font-head); font-size: .78rem;
+  }
+  #title {
+    position: absolute; left: 14px; top: 14px; display: flex; align-items: center; gap: 8px;
+    background: rgba(253,252,249,.92); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 10px;
+    font-family: var(--font-head); font-size: .85rem; color: var(--ink);
+  }
+  #title img { width: 20px; height: 20px; }
+</style>
+</head>
+<body>
+<main id="viewport">
+  <canvas id="canvas"></canvas>
+  <div id="overlay"></div>
+  <div id="title"><img src="static/logo-dl.png" alt=""><span></span></div>
+  <div id="views"></div>
+  <div id="status" class="hud" hidden></div>
+</main>
+<script type="module" src="static/embed.js?v=2"></script>
+</body>
+</html>

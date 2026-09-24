@@ -1,0 +1,484 @@
+/* DL brand pair (per digital-landscapes.com relaunch): Source Sans 3 for
+   headings/UI, Quattrocento Sans for body text. OFL-licensed, served locally. */
+@font-face {
+  font-family: "Source Sans 3";
+  src: url("fonts/SourceSans3-VariableFont_wght.ttf") format("truetype-variations");
+  font-weight: 200 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Quattrocento Sans";
+  src: url("fonts/QuattrocentoSans-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Quattrocento Sans";
+  src: url("fonts/QuattrocentoSans-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-display: swap;
+}
+
+:root {
+  --font-head: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Quattrocento Sans", "Segoe UI", system-ui, sans-serif;
+  /* THE COMMITTED THEME IS DARK (Marc, 2026-09-22). The family's light
+     palette was being AUTO-DARKENED by the browser, which inverts the window
+     and leaves the stage and the artwork alone -- nobody's design. The stage
+     was always dark because splats read best against it, so the window now
+     joins it instead of fighting it. The TOKENS and their relationships are
+     the family's unchanged, only the values are dark, so every house rule
+     (.on fills with --ink, hairlines are --line) still holds. */
+  color-scheme: dark;
+  --bg: #14161a;
+  --panel: #1b1e23;
+  --ink: #ece8e1;
+  --ink-soft: #9a958c;
+  --line: #343841;
+  --accent: #ece8e1;
+  /* what sits UNDER ink: the .on state fills with ink and writes in sheet */
+  --sheet: #14161a;
+  --card: #d9c39a;
+  --stage: #14161a;
+  /* the floating window, and the small overlays that share its chrome */
+  --glass: rgba(27, 30, 35, .94);
+  --glass-soft: rgba(27, 30, 35, .86);
+  /* STAGE FURNITURE: marks and cards that float ON the dark viewport. These
+     are light in BOTH themes -- they never inverted, and using --sheet for
+     them is what would break when --sheet went dark. */
+  --on-stage: #fdfcf9;
+  font-size: 15px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+body {
+  display: block; height: 100vh; overflow: hidden;
+  font-family: var(--font-body);
+  background: var(--bg); color: var(--ink);
+}
+
+/* ---------- sidebar: a FLOATING WINDOW over the stage ----------
+   The same window as DL-TerrainDiversity's and DL-TerrainMapper's, and for the
+   same reason: the stage is the work, and a docked column permanently spends
+   330 px of it. Dragged by its header, folded away by the button in its corner
+   and brought back by the chip that takes the button's place. Chrome is theirs
+   byte for byte -- 12 px inset, 5 px radius, --glass at .94, the same
+   hairline and the same soft shadow -- so the family reads as one set of
+   tools. */
+#sidebar {
+  position: absolute; left: 12px; top: 12px; z-index: 4;
+  width: 330px; min-width: 330px;
+  height: auto; max-height: calc(100% - 24px);
+  overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable;
+  display: flex; flex-direction: column; gap: 12px; padding: 14px;
+  border: 1px solid var(--line); border-radius: 5px;
+  background: var(--glass);
+  box-shadow: 0 2px 14px rgba(0, 0, 0, .45);
+}
+/* The header is the handle. */
+#sidebar header { cursor: grab; user-select: none; }
+#sidebar.dragging header { cursor: grabbing; }
+#sidebar.min { display: none; }
+#menu-main { display: flex; flex-direction: column; gap: 10px; }
+
+/* Fold and unfold. Two buttons of one size, one visible at a time: the chip is
+   placed on the fold button's own rect, so the window closes and opens from
+   the same pixel instead of jumping. */
+#menu-min { position: absolute; right: 12px; top: 10px; z-index: 5; }
+#menu-chip { position: absolute; left: 12px; top: 12px; z-index: 4; }
+#menu-chip, #menu-min {
+  box-sizing: border-box; width: 30px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-head); font-size: .74rem; line-height: 1;
+  padding: 0; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: var(--sheet); color: var(--ink-soft);
+}
+#menu-chip:hover, #menu-min:hover { color: var(--ink); border-color: var(--ink-soft); }
+#menu-chip[hidden] { display: none; }
+#sidebar header { display: flex; align-items: center; gap: 10px; }
+/* The mark is a solid black glyph on transparency, so on a dark panel it
+   would disappear. Inverting a monochrome mark gives the white version
+   rather than a recolour. */
+#logo { width: 34px; height: 34px; flex: none; filter: invert(1); }
+/* The anchor wraps the logo tightly so the flex row measures exactly as it did
+   before the link existed. line-height:0 keeps the inline-image descender gap
+   from adding a stray pixel under the roundel. (Same rules as DL-TerrainSlicer
+   and DL-TerrainDiversity -- the DL mark behaves alike in every tool.) */
+#logo-link { flex: none; display: block; line-height: 0; border-radius: 4px; }
+#logo-link:focus-visible { outline: 2px solid var(--ink, #111); outline-offset: 2px; }
+#sidebar header h1 { font-family: var(--font-head); font-weight: 700; font-size: 1.25rem; letter-spacing: .02em; }
+/* The title is a link but must not LOOK like one until you reach for it --
+   it is the app's heading first. Inherit everything, reveal on hover/focus. */
+#title-link { color: inherit; text-decoration: none; border-radius: 3px; }
+#title-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+#title-link:focus-visible { outline: 2px solid var(--ink, #111); outline-offset: 2px; }
+#sidebar .sub { color: var(--ink-soft); font-size: .8rem; margin-top: 2px; }
+#sidebar footer {
+  margin-top: auto; padding-top: 12px; border-top: 1px solid var(--line);
+  color: var(--ink-soft); font-size: .74rem; line-height: 1.5;
+}
+#sidebar footer a { color: var(--ink-soft); text-decoration: none; }
+#sidebar footer a:hover { color: var(--ink); text-decoration: underline; }
+/* the live readouts sit on their own row above the credit lines */
+.footstats { display: flex; justify-content: space-between; margin-bottom: 6px; }
+
+/* upload area: dashed only while empty, card once loaded */
+#dropzone { cursor: pointer; }
+#dropzone:not(.loaded) {
+  border: 1.5px dashed var(--line); border-radius: 6px;
+  padding: 18px 10px; text-align: center;
+}
+#dropzone.dragover { border-color: var(--ink); background: var(--bg); }
+#drop-hint { display: flex; flex-direction: column; gap: 5px; }
+#drop-hint strong { font-size: .9rem; }
+#drop-hint span { color: var(--ink-soft); font-size: .78rem; }
+
+/* the trim step: a frame of the clip, then the two handles under it */
+#trim-block { display: flex; flex-direction: column; gap: 8px; }
+#trim-video {
+  width: 100%; max-height: 190px; display: block; border-radius: 4px;
+  border: 1px solid var(--line); background: #000;
+}
+#drop-hint .or { font-size: .72rem; }
+
+#scene-card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+.row-between { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+#scene-name { font-size: .9rem; word-break: break-all; }
+
+/* ---------- panels ----------
+   Native <details>: a fold that costs no script to work at all, and keeps
+   working if the script fails. The grammar is DL-TerrainDiversity's and
+   DL-TerrainMapper's, deliberately -- a top-level section carries an icon, a
+   heading and a chevron; a nested fold is INDENTED under a hairline spine with
+   a caret. An indent says "inside"; a rule says "next". */
+.panel { display: flex; flex-direction: column; gap: 9px; }
+.panel h2 {
+  font-family: var(--font-head); font-weight: 700; font-size: .78rem;
+  text-transform: uppercase; letter-spacing: .08em; color: var(--ink-soft);
+}
+details.panel { display: block; }
+details.panel + details.panel {
+  border-top: 1px solid var(--line); padding-top: 9px; margin-top: 2px;
+}
+details.panel > summary {
+  display: flex; align-items: center; gap: 9px; position: relative;
+  cursor: pointer; list-style: none; user-select: none; padding: 4px 0;
+}
+details.panel > summary::-webkit-details-marker { display: none; }
+details.panel > summary > svg {
+  flex: none; width: 16px; height: 16px;
+  fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round; color: var(--ink-soft);
+}
+details.panel > summary > h2 { flex: 1; min-width: 0; }
+details.panel > summary::after {
+  content: "\25BE"; font-family: var(--font-head); font-size: .72rem;
+  color: var(--ink-soft); flex: none;
+  transform: rotate(-90deg); transition: transform .12s ease;
+}
+details.panel[open] > summary::after { transform: rotate(0deg); }
+details.panel[open] > summary > svg,
+details.panel[open] > summary > h2 { color: var(--ink); }
+details.panel > summary:hover h2,
+details.panel > summary:hover > svg,
+details.panel > summary:hover::after { color: var(--ink); }
+/* A closed section still reports what it holds. */
+.sec-badge {
+  margin-left: auto; font-family: var(--font-head); font-size: .66rem;
+  color: var(--ink-soft); font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 56%;
+}
+details.panel[open] > summary .sec-badge { display: none; }
+.sec-body { display: flex; flex-direction: column; gap: 9px; margin-top: 8px; }
+
+details.sub {
+  display: block; padding-left: 9px;
+  border-left: 1px solid var(--line); margin-left: 1px;
+}
+details.sub + details.sub { margin-top: 9px; }
+details.sub > summary.subhead {
+  cursor: pointer; list-style: none; user-select: none;
+  display: block; padding: 2px 0;
+}
+details.sub > summary.subhead::-webkit-details-marker { display: none; }
+details.sub > summary.subhead::before {
+  content: "\25B8\A0"; font-size: .68rem; color: var(--ink-soft);
+}
+details.sub[open] > summary.subhead::before { content: "\25BE\A0"; }
+details.sub > summary.subhead:hover { color: var(--ink); }
+/* The body spaces itself off the summary only when it is actually open, so a
+   run of closed folds sits tight and the whole window shortens. */
+details.sub > .sub-body {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 8px;
+}
+.meta { color: var(--ink-soft); font-size: .78rem; line-height: 1.4; }
+.meta.keys { font-size: .74rem; }
+.meta.keys b { color: var(--ink); font-weight: 700; }
+
+.row { display: flex; gap: 8px; }
+.row > * { flex: 1; }
+
+button {
+  font: inherit; font-size: .82rem; cursor: pointer;
+  padding: 7px 10px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--sheet); color: var(--ink);
+}
+button:hover { border-color: var(--ink-soft); }
+button.toggle.on, button.tool.on { background: var(--ink); border-color: var(--ink); color: var(--sheet); }
+button.link {
+  border: none; background: none; padding: 0;
+  color: var(--ink-soft); font-size: .76rem; text-decoration: underline;
+}
+button.link:hover { color: var(--ink); }
+button:disabled { opacity: .45; cursor: default; }
+
+.field { display: flex; flex-direction: column; gap: 4px; font-size: .8rem; }
+.field > span { display: flex; justify-content: space-between; color: var(--ink-soft); }
+.field em { font-style: normal; color: var(--ink); font-variant-numeric: tabular-nums; }
+.check { display: flex; align-items: center; gap: 7px; font-size: .8rem; color: var(--ink-soft); }
+input[type=range] { width: 100%; accent-color: var(--ink); }
+/* min/max slider pair of a section-box axis */
+.pair { display: flex; gap: 8px; }
+.pair input[type=range] { min-width: 0; }
+select {
+  font: inherit; font-size: .82rem; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--sheet); color: var(--ink);
+}
+
+.list { list-style: none; display: flex; flex-direction: column; gap: 5px; }
+.list li {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px;
+  font-size: .8rem;
+}
+.list li .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list li .val { font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+.list li button { padding: 2px 6px; font-size: .72rem; }
+.list:empty { display: none; }
+
+/* ---------- viewport ---------- */
+#viewport { position: absolute; inset: 0; background: var(--stage); }
+#canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+#overlay { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+
+/* measurement + annotation markers, projected each frame */
+.marker {
+  position: absolute; transform: translate(-50%, -50%);
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--on-stage); border: 2px solid rgba(20,22,26,.85);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.5);
+}
+.label {
+  position: absolute; transform: translate(-50%, -140%);
+  background: var(--sheet); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 5px;
+  padding: 3px 7px; font-size: .76rem; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 1px 4px rgba(0,0,0,.25);
+}
+.label.note { transform: translate(-50%, -160%); pointer-events: auto; max-width: 220px; white-space: normal; }
+.label.note b { display: block; font-family: var(--font-head); }
+#overlay svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+#overlay svg polyline, #overlay svg polygon { fill: rgba(217,195,154,.25); stroke: #fdfcf9; stroke-width: 1.5; }
+
+.hud {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  background: rgba(38,36,31,.9); color: #fdfcf9;
+  border-radius: 6px; padding: 7px 13px; font-size: .8rem;
+  pointer-events: none;
+}
+#hint { top: 16px; }
+#status { bottom: 16px; }
+
+/* separates the two ways into "Make a scene" without a second heading */
+.subhead {
+  font-family: var(--font-head); font-size: .74rem; color: var(--ink-soft);
+  text-transform: uppercase; letter-spacing: .06em;
+  padding-top: 4px; border-top: 1px solid var(--line);
+}
+
+/* make-a-scene panel */
+#make-drop, #photo-drop {
+  border: 1.5px dashed var(--line); border-radius: 6px;
+  padding: 14px 10px; text-align: center; cursor: pointer;
+  display: flex; flex-direction: column; gap: 4px;
+}
+#make-drop:hover, #make-drop.dragover,
+#photo-drop:hover, #photo-drop.dragover { border-color: var(--ink); background: var(--bg); }
+#make-drop strong { font-size: .88rem; }
+#make-drop span { color: var(--ink-soft); font-size: .76rem; }
+#make-bar {
+  height: 6px; border-radius: 3px; background: var(--line);
+  overflow: hidden; margin: 6px 0 8px;
+}
+#make-bar span {
+  display: block; height: 100%; width: 0;
+  background: var(--ink); transition: width .4s ease;
+}
+#make-log, #blender-log {
+  max-height: 130px; overflow: auto; margin-top: 8px;
+  font-family: ui-monospace, Consolas, monospace; font-size: .68rem;
+  color: var(--ink-soft); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 5px; padding: 6px 8px;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* orientation gizmo: live axis triad plus standard views */
+/* The view menu, in the DL tool series' shape: top right, a 3-column grid of
+   small quiet buttons, full-width ones under it. Same metrics and the same
+   states as DL-TerrainSlicer's, so the corner reads the same in both. The axis
+   dial stays -- a splat scene has no plan to orient you, and it is the only
+   thing in the corner that says which way you are looking. */
+#gizmo {
+  position: absolute; top: 10px; right: 10px; z-index: 5;
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+  user-select: none; width: 122px;
+}
+#gizmo-axes {
+  width: 62px; height: 62px; align-self: center;
+  background: var(--glass-soft); border: 1px solid var(--line);
+  border-radius: 50%;
+}
+#gizmo-axes line { stroke-width: 3; stroke-linecap: round; }
+#ax-x { stroke: #b4453f; } #ax-y { stroke: #4a7c4e; } #ax-z { stroke: #3f6ab4; }
+#gizmo-axes text {
+  font-family: var(--font-head); font-size: 15px; font-weight: 700;
+  text-anchor: middle; dominant-baseline: middle;
+}
+#ax-x-l { fill: #b4453f; } #ax-y-l { fill: #4a7c4e; } #ax-z-l { fill: #3f6ab4; }
+#gizmo-views { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+#gizmo button {
+  font-family: var(--font-head); font-size: .66rem; letter-spacing: .04em;
+  padding: 4px 0; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: var(--glass-soft); color: var(--ink-soft);
+}
+#gizmo button:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-soft); }
+#gizmo button.on { background: var(--ink); border-color: var(--ink); color: var(--sheet); }
+#gizmo button:disabled { opacity: .4; cursor: default; }
+#gizmo .wide { width: 100%; }
+/* the frame scrubber, shown only while standing in the capture */
+#gizmo-frames {
+  background: var(--glass-soft); border: 1px solid var(--line);
+  border-radius: 4px; padding: 5px 6px 3px;
+}
+#gizmo-frames input[type=range] { width: 100%; margin: 0; accent-color: var(--ink); }
+#gizmo-frame-label {
+  font-family: var(--font-head); font-size: .62rem; letter-spacing: .03em;
+  color: var(--ink-soft); text-align: center; padding-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+#dropveil {
+  position: absolute; inset: 0; display: none;
+  align-items: center; justify-content: center;
+  background: rgba(20,22,26,.8); border: 3px dashed var(--card);
+  color: var(--on-stage); font-family: var(--font-head); font-size: 1.1rem;
+}
+#dropveil.on { display: flex; }
+
+/* ---------- capture progress card (in the viewport) ---------- */
+#job-card {
+  /* centred in the viewport: a capture takes minutes and this is the only
+     thing to look at while it runs (Marc, 2026-09-08) */
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(580px, calc(100% - 32px)); z-index: 5;
+  display: flex; align-items: center; gap: 20px;
+  background: rgba(20,22,26,.94); color: var(--on-stage);
+  border: 1px solid rgba(253,252,249,.12); border-radius: 10px;
+  padding: 16px 20px; box-shadow: 0 6px 24px rgba(0,0,0,.35);
+}
+.job-ring { position: relative; width: 112px; height: 112px; flex: none; }
+.job-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.job-ring .track { fill: none; stroke: rgba(253,252,249,.15); stroke-width: 8; }
+.job-ring .arc {
+  fill: none; stroke: var(--card); stroke-width: 8; stroke-linecap: round;
+  stroke-dasharray: 326.7; stroke-dashoffset: 326.7;
+  transition: stroke-dashoffset .6s ease;
+}
+#job-card.running .job-ring .arc { animation: jobpulse 2.4s ease-in-out infinite; }
+#job-card.failed .job-ring .arc { stroke: #b4453f; }
+#job-card.done .job-ring .arc { stroke: #7fb083; }
+@keyframes jobpulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+.job-pct {
+  position: absolute; inset: 0; display: flex; align-items: baseline;
+  justify-content: center; padding-top: 34px;
+  font-family: var(--font-head); font-variant-numeric: tabular-nums;
+}
+.job-pct b { font-size: 2rem; font-weight: 700; line-height: 1; }
+.job-pct span { font-size: .9rem; margin-left: 2px; color: rgba(253,252,249,.7); }
+.job-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.job-title { font-family: var(--font-head); font-weight: 700; font-size: 1.02rem; }
+.job-stage { font-size: .86rem; }
+.job-counter { font-size: .86rem; color: var(--card); font-variant-numeric: tabular-nums; }
+.job-counter:empty, .job-stage:empty, .job-times:empty, .job-warn:empty { display: none; }
+/* Something the run recovered from on its own -- a retry, a lowered setting.
+ * Muted, because it is not a failure: the point is that the wait has a reason. */
+.job-warn { font-size: .78rem; line-height: 1.4; color: rgba(253,252,249,.66);
+            border-left: 2px solid rgba(233,196,140,.55); padding-left: 8px; }
+.job-times { font-size: .8rem; color: rgba(253,252,249,.72); font-variant-numeric: tabular-nums; }
+.job-note { font-size: .74rem; color: rgba(253,252,249,.6); line-height: 1.4; }
+.job-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.job-actions .check { color: rgba(253,252,249,.72); margin-right: auto; font-size: .76rem; }
+.job-actions button {
+  background: transparent; color: var(--on-stage); font-size: .78rem;
+  border-color: rgba(253,252,249,.35); padding: 5px 10px;
+}
+.job-actions button:hover { border-color: var(--on-stage); }
+#job-card.failed .job-stage { color: #e9a49f; }
+
+/* collapsed: a small pill in the corner keeps the number in view */
+#job-pill {
+  position: absolute; left: 16px; bottom: 16px; z-index: 5;
+  display: flex; align-items: center; gap: 7px;
+  background: rgba(20,22,26,.94); color: var(--on-stage);
+  border: 1px solid rgba(253,252,249,.2); border-radius: 999px;
+  padding: 5px 12px 5px 6px; font-size: .8rem; font-variant-numeric: tabular-nums;
+}
+#job-pill svg { width: 26px; height: 26px; transform: rotate(-90deg); }
+#job-pill .track { fill: none; stroke: rgba(253,252,249,.2); stroke-width: 4; }
+#job-pill .arc {
+  fill: none; stroke: var(--card); stroke-width: 4; stroke-linecap: round;
+  stroke-dasharray: 100.5; stroke-dashoffset: 100.5; transition: stroke-dashoffset .6s ease;
+}
+
+/* The brandmark every DL tool carries in its viewport, same geometry as
+   DL-TerrainSlicer's and DL-TerrainDiversity's. Their viewports are light and
+   ours is the one dark stage, so only the two colours are restated; the mark
+   sits at the same corner, at the same size, and brightens on hover alike. */
+#brandmark {
+  position: absolute; right: 16px; bottom: 12px; z-index: 2;
+  display: flex; flex-direction: row-reverse; align-items: center; gap: 7px;
+  font-family: var(--font-head); font-size: .76rem;
+  color: rgba(253,252,249,.5); text-decoration: none; user-select: none;
+}
+#brandmark:hover { color: rgba(253,252,249,.9); }
+#brandmark:hover img { opacity: 1; }
+#brandmark img { width: 1.15em; height: 1.15em; opacity: .6; }
+
+/* the finish signal: the viewport blinks three times */
+#job-flash { position: absolute; inset: 0; pointer-events: none; opacity: 0; background: var(--on-stage); }
+#job-flash.failed { background: #b4453f; }
+#job-flash.flash { animation: jobflash 1.8s ease-out; }
+@keyframes jobflash {
+  0% { opacity: 0; } 8% { opacity: .55; } 28% { opacity: 0; }
+  38% { opacity: .45; } 58% { opacity: 0; } 68% { opacity: .35; } 100% { opacity: 0; }
+}
+
+@media (max-width: 760px) {
+  /* Stacked layout: the card turns into a column, but it stays CENTRED in the
+     viewport like it is on a wide screen. It used to be pinned 12px from the
+     top, which -- once the card was centred rather than top-aligned -- left it
+     sitting over the sidebar instead of over the stage. If the column is taller
+     than the short viewport, scroll it rather than overflow upward. */
+  #job-card {
+    flex-direction: column; align-items: stretch;
+    max-height: calc(100% - 24px); overflow-y: auto;
+  }
+  .job-ring { align-self: center; }
+  /* The window keeps floating; it just stops being 330 px wide on a phone. */
+  #sidebar { left: 8px; top: 8px; width: calc(100% - 16px); min-width: 0;
+             max-height: calc(100% - 16px); }
+  #menu-chip { left: 8px; top: 8px; }
+}

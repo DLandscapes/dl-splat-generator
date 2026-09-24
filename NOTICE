@@ -1,0 +1,157 @@
+DL-SplatGenerator — site video to measurable splat scene
+Copyright 2026 Digital Landscapes (Marc-Eduard Ihle)
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+The Digital Landscapes mark (project/static/logo-dl.png) identifies the author.
+As section 6 of the License says, the License does not grant permission to use
+it as a trade name or trademark.
+
+===============================================================================
+THIRD-PARTY COMPONENTS REDISTRIBUTED IN THIS REPOSITORY
+===============================================================================
+
+This repository does not merely depend on the following — it CONTAINS them.
+Each licence text travels with its own files, at the path given, so the
+obligation is met by the copy you are holding rather than by a link that may
+rot.
+
+-------------------------------------------------------------------------------
+three.js, release 185
+    project/static/vendor/three/three.module.min.js
+    project/static/vendor/three/three.core.min.js
+    project/static/vendor/three/addons/postprocessing/Pass.js
+    Licence: MIT — full text at project/static/vendor/three/LICENSE
+    Copyright 2010-2026 three.js authors
+    https://github.com/mrdoob/three.js
+
+-------------------------------------------------------------------------------
+Spark 2.1.0 — the Gaussian-splat renderer
+    project/static/vendor/spark/spark.module.min.js
+    Licence: MIT — full text at project/static/vendor/spark/LICENSE
+    Copyright 2025 World Labs Technologies, Inc.
+    https://github.com/sparkjsdev/spark
+
+-------------------------------------------------------------------------------
+Source Sans 3
+    project/static/fonts/SourceSans3-VariableFont_wght.ttf
+    Licence: SIL Open Font License 1.1 — full text at
+             project/static/fonts/OFL-SourceSans3.txt
+    Copyright 2010-2024 Adobe (http://www.adobe.com/)
+    https://github.com/adobe-fonts/source-sans
+
+-------------------------------------------------------------------------------
+Quattrocento Sans
+    project/static/fonts/QuattrocentoSans-Regular.ttf
+    project/static/fonts/QuattrocentoSans-Bold.ttf
+    Licence: SIL Open Font License 1.1 — full text at
+             project/static/fonts/OFL.txt
+    Copyright (c) 2011, Pablo Impallari; Copyright (c) 2011, Igino Marini
+    https://github.com/impallari/Quattrocento-Sans
+
+===============================================================================
+PROGRAMS THE GENERATOR CALLS, NOT REDISTRIBUTED HERE
+===============================================================================
+
+The VIEWER — open a splat scene, measure it, section it, export it for the web
+— needs nothing beyond the components above and runs in a browser.
+
+The GENERATOR — video to splat, dense mesh, terrain model — calls the programs
+below. None of them is in this repository: each is fetched separately and used
+under its own licence. They are named here so that the debt is on record, and
+so that nobody packaging a generator release assumes they are covered by this
+repository's licence. They are not.
+
+COLMAP — camera poses, and the dense pipeline behind the measurable mesh
+    BSD 3-Clause licence.  https://github.com/colmap/colmap
+
+Brush — Gaussian-splat training
+    Apache License 2.0.  https://github.com/ArthurBrussee/brush
+
+FFmpeg — frame extraction
+    The FFmpeg build used during development is the GPL-3.0 build. FFmpeg is
+    also available as an LGPL build. Whichever is used, it is not part of this
+    repository and is not relicensed by it.  https://ffmpeg.org/
+
+Depth Anything V2 (Metric, Base) — the single-photograph route
+    ⚠ Licence of the specific checkpoints not yet verified. Some Depth Anything
+    V2 checkpoints are published under a non-commercial licence. Check before
+    any release that ships or depends on this route.
+    https://github.com/DepthAnything/Depth-Anything-V2
+
+YuNet — face detection for the privacy mask, via OpenCV
+    ⚠ Licence of the model file not yet verified.
+    https://github.com/opencv/opencv_zoo
+
+PyTorch, Hugging Face Transformers, OpenCV, NumPy, Pillow, FastAPI and Uvicorn
+are installed into a local Python environment, not shipped here, each under its
+own licence.
+
+===============================================================================
+TECHNIQUES, PRIOR WORK AND DEBTS
+===============================================================================
+
+3D Gaussian Splatting
+    The representation this whole tool rests on.
+    Kerbl, B., Kopanas, G., Leimkühler, T. and Drettakis, G. (2023) "3D
+    Gaussian Splatting for Real-Time Radiance Field Rendering". ACM
+    Transactions on Graphics 42(4). doi:10.1145/3592433
+
+The cloth simulation filter
+    The ground filter in project/tools/ground_dem.py is written from the paper's
+    description, not vendored:
+    Zhang, W., Qi, J., Wan, P., Wang, H., Xie, D., Wang, X. and Yan, G. (2016)
+    "An Easy-to-Use Airborne LiDAR Data Filtering Method Based on Cloth
+    Simulation". Remote Sensing 8(6):501. doi:10.3390/rs8060501
+    Its documented weakness on low, dense vegetation is stated wherever the tool
+    offers a terrain model.
+
+Umeyama alignment
+    The pose regression test aligns two camera paths with the closed-form
+    least-squares similarity of:
+    Umeyama, S. (1991) "Least-squares estimation of transformation parameters
+    between two point patterns". IEEE Transactions on Pattern Analysis and
+    Machine Intelligence 13(4):376-380. doi:10.1109/34.88573
+
+The interface grammar and the house theme
+    From the sibling tools DL-TerrainDiversity and DL-TerrainMapper (Apache-2.0):
+    the floating window, the two-level folds and the design tokens. This tool
+    commits to a DARK palette of the same tokens, because splats read best
+    against a dark stage.
+    https://github.com/DLandscapes/dl-terrain-diversity
+    https://github.com/DLandscapes/dl-terrain-mapper
+
+The terrain-model hand-off
+    Its GeoTIFFs are written to be opened unchanged by DL-TerrainSlicer, which
+    cuts them into laser sheets.
+    https://github.com/DLandscapes/dl-terrain-slicer
+
+===============================================================================
+DATA
+===============================================================================
+
+This repository contains NO captured site data. The demonstration and
+calibration scenes in project/data/ are synthesised by the tool itself
+(project/tools/make_demo.mjs), and the pose references in
+project/tools/reference/ are camera positions only — numbers, no imagery.
+
+Captures, and everything made from them, are deliberately kept out of version
+control: footage of a site can show people, and a scene made from it shows
+them too. A public sample scene will be added by name, only once it has been
+checked for exactly that.
+
+===============================================================================
+DEVELOPMENT
+===============================================================================
+
+Developed by Digital Landscapes with AI assistance. The design decisions and
+all verification are Digital Landscapes' own.

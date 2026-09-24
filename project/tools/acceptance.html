@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DL-SplatGenerator acceptance</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "../static/vendor/three/three.module.min.js",
+    "three/addons/": "../static/vendor/three/addons/",
+    "@sparkjsdev/spark": "../static/vendor/spark/spark.module.min.js"
+  }
+}
+</script>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; display: flex; align-items: flex-start; }
+  #left { width: 520px; padding: 18px; overflow: auto; border-right: 1px solid #ddd; }
+  /* Fixed pixel size on purpose: the results must not depend on the window,
+     so the test reproduces the same framing in any viewport. */
+  #stage { width: 640px; height: 480px; flex: none; position: relative; background: #14161a; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #overlay { position: absolute; inset: 0; pointer-events: none; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p.sub { color: #666; margin: 0 0 14px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #eee; }
+  td.num { text-align: right; }
+  .pass { color: #17692f; font-weight: 600; }
+  .fail { color: #a3161b; font-weight: 600; }
+  #summary { margin: 14px 0; padding: 10px 12px; border-radius: 6px; background: #f4f2ee; }
+</style>
+</head>
+<body>
+<div id="left">
+  <h1>DL-SplatGenerator acceptance test</h1>
+  <p class="sub">Loads <code>data/calibration.ply</code>, picks each marker through the
+     renderer, then measures spans whose true length is known by construction &mdash;
+     and puts the section box through the failure it once had.</p>
+  <div id="summary">Running…</div>
+  <table id="results"><thead><tr>
+    <th>Check</th><th class="num">Expected</th><th class="num">Measured</th>
+    <th class="num">Error</th><th>Result</th>
+  </tr></thead><tbody></tbody></table>
+</div>
+<div id="stage"><canvas id="canvas"></canvas><div id="overlay"></div></div>
+
+<script type="module">
+import * as THREE from "three";
+import { Viewer } from "../static/viewer.js";
+import { Tools } from "../static/tools.js";
+
+// Tolerances. Picking returns a point on the near surface of a marker ball
+// (radius 20 mm), so a few millimetres of offset is expected and largely
+// cancels between two markers seen from the same direction.
+const TOL_LENGTH_PCT = 0.5;   // 0.5% of the true length
+const TOL_AREA_PCT = 1.0;
+const TOL_PICK_M = 0.05;      // marker radius plus slack
+
+const viewer = new Viewer(document.getElementById("canvas"), document.getElementById("overlay"));
+const tools = new Tools(viewer, document.getElementById("overlay"));
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const rows = [];
+// a handle for poking at a finished run from the console
+window.__acc = { viewer, tools, rows };
+
+function row(check, expected, measured, tolPct, unit = "m") {
+  const err = measured - expected;
+  const pass = Math.abs(err) <= Math.abs(expected) * tolPct / 100;
+  rows.push({ check, expected, measured, err, pass, unit });
+}
+
+/* Not everything worth checking is a length. A section box either lands where
+ * the fractions say or it does not, and a table that forces those into
+ * millimetres would be lying about what was measured. */
+function bool(check, pass) {
+  rows.push({ check, expected: 1, measured: pass ? 1 : 0, err: 0, pass, unit: "",
+              fmt: () => (pass ? "as specified" : "NOT as specified") });
+}
+
+async function run() {
+  await viewer.loadUrl("../data/calibration.ply", "calibration.ply");
+  const truth = await (await fetch("../data/calibration.markers.json")).json();
+  await wait(250);
+
+  // Render at a fixed size and pick by normalised device coordinate, so the
+  // result does not depend on the window having a usable layout.
+  viewer.renderer.setSize(640, 480, false);
+  viewer.camera.aspect = 640 / 480;
+  viewer.camera.updateProjectionMatrix();
+
+  // pick every marker by aiming at its known centre and picking screen centre
+  const picked = {};
+  for (const m of truth.markers) {
+    viewer._cam.target.set(...m.p);
+    viewer._cam.dist = 1.2;
+    viewer._cam.yaw = 0.5;
+    viewer._cam.pitch = -0.45;
+    viewer.camera.near = 0.01;
+    viewer.camera.far = 200;
+    viewer.camera.updateProjectionMatrix();
+    viewer._applyCamera();
+    viewer.renderer.render(viewer.scene, viewer.camera);
+    await wait(60);
+    viewer.renderer.render(viewer.scene, viewer.camera);
+    const hit = viewer.pickNdc(0, 0);
+    picked[m.id] = hit;
+    const d = hit ? hit.distanceTo(new THREE.Vector3().fromArray(m.p)) : Infinity;
+    rows.push({
+      check: `pick ${m.id}`, expected: 0, measured: d, err: d,
+      pass: d <= TOL_PICK_M, unit: "m",
+    });
+  }
+
+  // calibrate on the span that is exactly 1.000 m by construction
+  tools.scaleFactor = 1 / picked.A.distanceTo(picked.B);
+  tools.calibrated = true;
+  const k = tools.scaleFactor;
+
+  for (const d of truth.distances) {
+    const v = tools._value("distance", [picked[d.from], picked[d.to]]) * k;
+    row(`distance ${d.from}–${d.to}`, d.metres, v, TOL_LENGTH_PCT);
+  }
+  for (const h of truth.heights) {
+    const v = tools._value("height", [picked[h.from], picked[h.to]]) * k;
+    row(`height ${h.from}–${h.to}`, h.metres, v, TOL_LENGTH_PCT);
+  }
+  for (const a of truth.areas) {
+    const v = tools._value("area", a.ring.map((id) => picked[id])) * k * k;
+    row(`area ${a.ring.join("–")}`, a.squareMetres, v, TOL_AREA_PCT, "m²");
+  }
+
+  // ---------------------------------------------------------------- section
+  // The section box is the one feature here with a HISTORY of silently doing
+  // nothing: Spark's plane SDF kept its cut perpendicular to the intended one
+  // and pinned through the scene centre, so the slider moved and the picture
+  // did not. Every check below is written against that failure -- the box must
+  // land where the fractions say, it must actually erase splats on screen, and
+  // the flags that decide crop-versus-complement must survive being poked.
+
+  const fb = viewer.frameBounds();
+  const span = fb.getSize(new THREE.Vector3()).length();
+  const TOL_BOX = span * 1e-4;          // a ten-thousandth of the scene diagonal
+
+  const want = { enabled: true, min: { x: 0.25, y: 0.0, z: 0.1 },
+                                max: { x: 0.75, y: 0.5, z: 1.0 } };
+  const lerp3 = (f) => new THREE.Vector3(
+    THREE.MathUtils.lerp(fb.min.x, fb.max.x, f.x),
+    THREE.MathUtils.lerp(fb.min.y, fb.max.y, f.y),
+    THREE.MathUtils.lerp(fb.min.z, fb.max.z, f.z));
+  const wantBox = new THREE.Box3(lerp3(want.min), lerp3(want.max));
+
+  viewer.setSection(want);
+  bool("section box centre lands on the fractions",
+       viewer._sdf.position.distanceTo(wantBox.getCenter(new THREE.Vector3())) <= TOL_BOX);
+  bool("section box half-extents match the fractions",
+       viewer._sdf.scale.distanceTo(
+         wantBox.getSize(new THREE.Vector3()).multiplyScalar(0.5)) <= TOL_BOX);
+  bool("section box is axis-aligned (identity rotation)",
+       viewer._sdf.quaternion.angleTo(new THREE.Quaternion()) < 1e-6);
+
+  // The crop is an INVERTED sdf on a non-inverted edit. Getting either flag
+  // the wrong way round turns "keep the inside" into "erase the inside", which
+  // looks plausible until you notice the scene is its own negative. setSection
+  // re-asserts both on every call; prove that it does.
+  viewer._sdf.invert = false;
+  viewer._edit.invert = true;
+  viewer.setSection(want);
+  bool("crop flags are re-asserted after being poked",
+       viewer._sdf.invert === true && viewer._edit.invert === false);
+
+  // Does it erase anything ON SCREEN? Count pixels that differ from the
+  // background, with the section off, then cropped to a small box, then off
+  // again. readPixels is valid immediately after the draw call in the same
+  // task, so no frame is waited for and nothing depends on the compositor.
+  const gl = viewer.renderer.getContext();
+  const shot = () => {
+    viewer.renderer.render(viewer.scene, viewer.camera);
+    const px = new Uint8Array(640 * 480 * 4);
+    gl.readPixels(0, 0, 640, 480, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return px;
+  };
+  /* Spark accumulates on its own schedule, so a single read after a fixed
+   * wait is worthless: it lands either one state behind or on a buffer that
+   * has been cleared but not yet drawn (which reads as an empty scene and
+   * would pass a "content disappeared" check for entirely the wrong reason --
+   * it did, before this settled). Read until the same non-empty count comes
+   * back twice, which is the steady state by definition. */
+  const settle = async (tries = 40) => {
+    let last = -1;
+    for (let i = 0; i < tries; i++) {
+      await wait(80);
+      const n = content(shot());
+      if (n > 0 && n === last) return n;
+      last = n;
+    }
+    return last;
+  };
+  const content = (px) => {
+    const tally = new Map();                       // modal colour = background
+    for (let i = 0; i < px.length; i += 4) {
+      const k = (px[i] >> 3 << 10) | (px[i + 1] >> 3 << 5) | (px[i + 2] >> 3);
+      tally.set(k, (tally.get(k) || 0) + 1);
+    }
+    let bg = 0, best = -1;
+    for (const [k, n] of tally) if (n > best) { best = n; bg = k; }
+    const br = (bg >> 10 & 31) << 3, bgg = (bg >> 5 & 31) << 3, bb = (bg & 31) << 3;
+    let n = 0;
+    for (let i = 0; i < px.length; i += 4)
+      if (Math.abs(px[i] - br) > 12 || Math.abs(px[i + 1] - bgg) > 12
+          || Math.abs(px[i + 2] - bb) > 12) n++;
+    return n;
+  };
+
+  // frame the whole scene so the crop has something to remove
+  viewer.setSection({ enabled: false });
+  viewer.fitView();
+  viewer.camera.near = 0.01;
+  viewer.camera.far = 200;
+  viewer.camera.updateProjectionMatrix();
+  viewer._applyCamera();
+  const whole = await settle();
+  bool("the calibration scene renders something to cut", whole > 640 * 480 * 0.01);
+
+  viewer.setSection({ enabled: true, min: { x: 0.0, y: 0.0, z: 0.0 },
+                                     max: { x: 0.3, y: 1.0, z: 1.0 } }, { outline: false });
+  const cropped = await settle();
+  rows.push({
+    check: "cropping to 30% in x removes content", expected: 0, measured: cropped / whole,
+    err: 0, pass: cropped < whole * 0.75, unit: "", fmt: (r) =>
+      `${(r.measured * 100).toFixed(1)}% of the pixels left`,
+  });
+
+  viewer.setSection({ enabled: false });
+  const restored = await settle();
+  rows.push({
+    check: "turning the section off restores the scene", expected: 1,
+    measured: restored / whole, err: 0,
+    pass: Math.abs(restored - whole) <= whole * 0.02, unit: "",
+    fmt: (r) => `${(r.measured * 100).toFixed(1)}% of the original`,
+  });
+  bool("disabling removes the edit and the outline",
+       viewer._edit === null && viewer._sectionHelper === null);
+
+  // normalizeSection is what a .dlscene file lands in, so it has to survive
+  // nonsense as well as the legacy plane shape from before the box existed.
+  const n1 = Viewer.normalizeSection(
+    { enabled: true, min: { x: -3, y: 0, z: 0 }, max: { x: 9, y: 1, z: 1 } });
+  bool("out-of-range fractions are clamped to 0..1",
+       n1.min.x === 0 && n1.max.x === 1);
+  const n2 = Viewer.normalizeSection(
+    { enabled: true, min: { x: 0.8, y: 0, z: 0 }, max: { x: 0.2, y: 1, z: 1 } });
+  bool("an inverted range is swapped, not left empty",
+       Math.abs(n2.min.x - 0.2) < 1e-9 && Math.abs(n2.max.x - 0.8) < 1e-9);
+  const n3 = Viewer.normalizeSection({ enabled: true, axis: "y", t: 0.4 });
+  bool("a legacy plane cut becomes one face of the box",
+       n3.max.y === 0.4 && n3.min.y === 0 && n3.min.x === 0 && n3.max.x === 1);
+  const n4 = Viewer.normalizeSection({ enabled: true, axis: "y", t: 0.4, flip: true });
+  bool("a flipped legacy plane cuts the other face",
+       n4.min.y === 0.4 && n4.max.y === 1);
+  bool("a disabled section normalises to the whole scene",
+       Viewer.normalizeSection({ enabled: false }).max.z === 1);
+
+  render();
+}
+
+function render() {
+  const body = document.querySelector("#results tbody");
+  body.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${r.check}</td>` +
+      (r.fmt
+        ? `<td class="num">—</td><td colspan="2">${r.fmt(r)}</td>`
+        : `<td class="num">${r.expected.toFixed(3)}</td>` +
+          `<td class="num">${r.measured.toFixed(4)}</td>` +
+          `<td class="num">${(r.err * 1000).toFixed(1)} mm</td>`) +
+      `<td class="${r.pass ? "pass" : "fail"}">${r.pass ? "PASS" : "FAIL"}</td>`;
+    body.appendChild(tr);
+  }
+  const failed = rows.filter((r) => !r.pass).length;
+  const el = document.getElementById("summary");
+  el.textContent = failed
+    ? `${failed} of ${rows.length} checks FAILED`
+    : `All ${rows.length} checks passed`;
+  el.className = failed ? "fail" : "pass";
+  window.__acceptance = { rows, failed, total: rows.length };
+}
+
+run().catch((err) => {
+  document.getElementById("summary").textContent = `Error: ${err.message}`;
+  window.__acceptance = { error: err.message };
+});
+</script>
+</body>
+</html>

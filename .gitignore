@@ -1,0 +1,44 @@
+# DL-SplatGenerator
+#
+# Two traps learned the hard way in DL-TerrainMapper, and kept here verbatim in
+# spirit because both fail SILENTLY:
+#   - NO QUOTES around a path. .gitignore treats quotes as literal characters,
+#     so a quoted path with spaces matches nothing and the whole folder ships.
+#     Spaces need no escaping; only a TRAILING space would.
+#   - NO LEADING SLASH unless you mean the repository root ONLY. `/.claude/`
+#     never matched `project/.claude/`, which was committed in TerrainMapper
+#     v0.1.0 and published the absolute path of Marc's own disk. Bare patterns
+#     match at every level.
+
+# ---- PRIVATE: never public, whatever else changes -------------------------
+# The user's original footage and everything made from it. input\ and output\
+# contain people -- IMG_1779 has a child in most of the clip and is unreviewed
+# -- so they stay out of git entirely, not "for now". A public sample scene is
+# added deliberately, by name, when one exists (see the status notes).
+input/
+output/
+# Marc's numbered milestone backups and session records: on disk, never in git
+history and back up/
+# local editor/agent config; holds absolute, machine-specific paths
+.claude/
+
+# ---- THIRD-PARTY PROGRAMS: fetched, not redistributed ----------------------
+# COLMAP, Brush, ffmpeg and the face model -- 1.9 GB. Also a LICENSING line,
+# not just a size one: the ffmpeg here is the GPL-3.0 build, which cannot sit
+# inside an Apache-2.0 repository as-is.
+bin/
+
+# ---- REPRODUCIBLE: rebuilt by the tools themselves -------------------------
+.venv/
+# pipeline intermediates (frames, COLMAP databases, dense workspaces)
+work/
+node_modules/
+# Rust / Brush autotune caches
+target/
+__pycache__/
+*.pyc
+
+# ---- OS noise ---------------------------------------------------------------
+Thumbs.db
+.DS_Store
+desktop.ini
