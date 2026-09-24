@@ -6,14 +6,17 @@ set its real-world scale; measure and annotate it; walk the path it was filmed
 from; and hand it on — as a self-contained bundle that embeds in a web page, or
 as a package the Capture Walk add-on opens in Blender.
 
-Named `DL-3DGS` until 2026-09-06; renamed to match the other Digital Landscapes
-tools — `DL-TerrainMapper`, `DL-TerrainSlicer`, `DL-TerrainDiversity`. **The
-folder is still `DL-SplatGenerator`**: only the tool was renamed, so every path in
-this file and in the tools is unchanged.
+This is the **technical reference**: how each stage works, why, and what was
+measured. For what the tool is and how to start, see the
+[README at the repository root](../README.md).
 
-The **viewer half is entirely client-side** — no server logic, no build step —
-so an exported scene drops straight into digital-landscapes.com. Python appears
-only in the generator half, where local GPU training genuinely needs it.
+Named `DL-3DGS` until 2026-09-06; renamed to match the other Digital Landscapes
+tools — `DL-TerrainMapper`, `DL-TerrainSlicer`, `DL-TerrainDiversity`.
+
+The **viewer half is entirely client-side** — no server logic, no build step, no
+network requests — so an exported scene drops straight into
+digital-landscapes.com. Python appears only in the generator half, where local
+GPU training genuinely needs it.
 
 ## Running it
 
@@ -53,7 +56,9 @@ Both binary little-endian and ASCII PLY are read. Big-endian is not supported.
 
 ```
 viewer.html            the app
-index.html             v1 single-file viewer, kept for comparison
+index.html             v1 single-file viewer, kept for comparison (a copy of
+                       reference/v1-single-file.html)
+launcher.py            serves the app; standard library only
 static/
   app.js               UI wiring
   viewer.js            render layer — wraps Spark, owns camera, picking, framing
@@ -61,11 +66,28 @@ static/
   scene.js             .dlscene sidecar + ZIP writer for the export bundle
   ply.js               PLY header inspection and point-cloud parsing
   embed.js             read-only shell used by exported bundles
-  style.css            DL theme (Source Sans 3 / Quattrocento Sans, warm paper)
+  style.css            DL theme, DARK: the family's tokens with dark values,
+                       because splats read best against a dark stage
+  fonts/               Source Sans 3 and Quattrocento Sans, SIL OFL, texts alongside
   vendor/              three.js and Spark, both MIT, licences alongside
+app/                   the generator's HTTP layer (FastAPI) — present only when
+                       the venv is: main.py, jobs.py, blender_export.py
 tools/
+  capture.py           video / stills -> poses -> splats (the generator)
+  dense_mesh.py        the measurable mesh from the same solve
+  ground_dem.py        ground filter and terrain model (GeoTIFF)
+  depth_splat.py       a scene from one photograph
+  privacy_mask.py      face masking before pose solving
+  colmap_cameras.py    cameras.json from a COLMAP model
+  scene_index.py       output/scenes.json, the generated-scenes list
+  inspect_video.py     frame count, fps and rotation of a clip
+  inspect_ply.mjs      layout, SH degree and extent of a splat file
+  to_spz.mjs           PLY -> SPZ
   make_demo.mjs        generates the bundled test scenes
   acceptance.html      measurement acceptance test (see below)
+  smoke_capture.py     the generator's end-to-end gate
+  sparse_model_test.py regression test for the sparse-model choice
+  pose_regression.py   camera-path drift check (Tier 2)
 data/
   demo.ply             synthetic island terrain, 53,980 splats
   calibration.ply      markers at exactly known separations, 50,268 splats
@@ -179,7 +201,29 @@ space, the original file is shipped instead.
 ## Making splats from a video, in the app
 
 Start the app with the **venv** interpreter and the sidebar gains a **Make a
-scene** panel: drop a video, pick a quality, watch the stages go by.
+scene** panel: drop a video, trim it, pick a quality, watch the stages go by.
+
+### Trimming the clip
+
+A clip is rarely usable end to end — the walk that solves is often a few
+seconds in the middle, with a swing at each end that only confuses the solver.
+So dropping a video does **not** start a capture: it shows the clip with two
+handles, and dragging either one seeks the preview to that instant, so the cut
+is chosen by looking at the frame. **Make the scene** starts with that span;
+**Use all of it** resets.
+
+Only that span is ever **extracted**, so COLMAP and Brush never see the rest.
+`-ss` goes before `-i` — a keyframe seek, instant on a phone clip — and `-t` is
+the duration; both sit ahead of the frame-selection filter, so "every Nth
+frame" means the same thing whatever is cut. Measured on a 3.57 s clip: 36
+frames kept whole, 15 for a 1.0–2.5 s window. The span is recorded in
+`capture.json` under `settings.trim`, and `--start` / `--end` (seconds) do the
+same from the command line.
+
+The panel warns under 2 s. Its "about N frames" estimate needs the frame rate,
+which HTML5 video does not expose, so it measures it from a few played frames —
+and where the browser will not present them, it shows no number rather than
+guessing one.
 
 While it runs, a progress card sits in the viewport (the viewport is empty
 anyway): a ring with a percentage weighted by how long each stage really
@@ -256,6 +300,15 @@ keeping the best attempt. A retry costs seconds when it fails and a couple of
 minutes when it works; it is announced on the card and in the log, and
 `capture.json` records which settings produced the scene under
 `reconstruction.mapper`.
+
+⚠ **The ladder must survive a mapper that fails outright.** COLMAP *exits 1*
+when it finds no initial pair — exactly the failure the relaxed rungs exist to
+rescue — and the ladder originally only handled a mapper that succeeded weakly,
+so that exit ended the capture after one attempt. Each rung's failure is now
+caught and the next rung runs; only if every rung fails does the capture stop,
+quoting the last reason. Found on a 3.57 s clip that died after 35 s, and which
+then placed all 31 frames — rescued by the *second* rung, the one being
+skipped.
 
 With that ladder in place the camera model turned out not to decide whether the
 clip reconstructs at all: OPENCV without a prior, OPENCV with one, and
@@ -431,7 +484,8 @@ Useful flags: `--stride N` (default 3), `--blur-drop PCT` (default 15),
 `--matcher exhaustive`, `--focal-35mm MM` (default 26, the phone's main camera
 in video mode; 0 lets COLMAP guess at 1.2× the long side),
 `--allow-poor` (train even when too few frames were placed), `--steps N`
-(default 15000), `--max-splats N`, `--with-viewer` to watch Brush train,
+(default 15000), `--max-splats N`, `--start S` / `--end S` to use only part of
+the clip (seconds), `--with-viewer` to watch Brush train,
 `--dry-run` to print the commands, and `--from {frames,prune,poses,train}` to
 resume without redoing earlier stages. A run that reaches the pose stage clears
 its own `database.db`, `sparse\` and `undistorted\` first — COLMAP reuses
@@ -469,13 +523,19 @@ carries the result so a later publish step can refuse an unreviewed capture.
 
 **Third-party tools live in `DL-SplatGenerator\bin\`** and are found automatically —
 nothing is installed system-wide, and the folder is deliberately outside
-`project\` so it stays out of backups and exports:
+`project\` so it stays out of backups, exports **and the repository**:
 
-| Tool | Version | Purpose |
-| --- | --- | --- |
-| ffmpeg | n7.1 (BtbN build) | frame extraction |
-| COLMAP | 4.1.1, CUDA build | camera poses |
-| Brush | v0.3.0 (SHA-256 verified) | splat training |
+| Tool | Version | Purpose | Licence |
+| --- | --- | --- | --- |
+| ffmpeg | n7.1 (BtbN build) | frame extraction | GPL-3.0 build ⚠ |
+| COLMAP | 4.1.1, CUDA build | camera poses | BSD 3-Clause |
+| Brush | v0.3.0 (SHA-256 verified) | splat training | Apache-2.0 |
+
+⚠ `bin\` is excluded from git on purpose. Size is one reason; the other is that
+the ffmpeg build used here is GPL-3.0, which cannot sit inside this Apache-2.0
+repository as-is — an LGPL build exists and would do the same job. See `NOTICE`
+at the repository root, which also flags the two licences not yet verified: the
+Depth Anything V2 checkpoints (some are non-commercial) and the YuNet model.
 
 COLMAP 4.x renamed its options: it is `--FeatureExtraction.use_gpu` and
 `--FeatureMatching.use_gpu` now, not the old `SiftExtraction`/`SiftMatching`
@@ -490,10 +550,11 @@ Python dependency.
 `tools/acceptance.html` is the acceptance test. It loads `calibration.ply`,
 picks each marker through the real renderer, calibrates on the span that is
 exactly 1.000 m by construction, then checks the remaining spans and the
-rectangle of known area. It is deliberately layout-independent, so it produces
-the same result in any window size.
+rectangle of known area — and then puts the **section box** through the failure
+it once had (see *Known gaps* history below). It is deliberately
+layout-independent, so it produces the same result in any window size.
 
-Last run — 15/15 passed:
+Last run — **28/28** passed. The measurement half:
 
 | Check | True | Measured | Error |
 | --- | --- | --- | --- |
@@ -506,6 +567,26 @@ Marker picking lands ~20–28 mm off centre, which is the marker ball's own
 radius: a ray hits the near surface, not the middle. That offset is systematic
 and largely cancels between two markers viewed from the same direction, which is
 why the spans come out to a millimetre or two.
+
+The section-box half (13 checks) is written against that box's history of
+silently doing nothing:
+
+- the box lands where the fractions say — the SDF's own position and scale
+  against `frameBounds()`, to a ten-thousandth of the scene diagonal — and is
+  axis-aligned;
+- the two flags that decide crop-versus-complement (an *inverted* SDF on a
+  *non-inverted* edit) are set wrong on purpose and must come back;
+- it erases something **on screen**: pixels that differ from the background,
+  cropped to 30 % in x and then switched off — measured 15.7 % left, 100.0 %
+  back;
+- `normalizeSection` clamps, swaps an inverted range, and still converts the
+  legacy plane shape `{axis, t, flip}` from old `.dlscene` files.
+
+⚠ The pixel check **settles** rather than waiting a fixed time. Spark
+accumulates on its own schedule, so a single read lands either one state behind
+or on a buffer cleared but not yet drawn — which reads as an empty scene, and an
+empty scene *passes* a "content disappeared" check. It reads until the same
+non-empty count comes back twice.
 
 `embed-test.html` + `scene.json` and `iframe-test.html` exercise the exported
 embed path against the dev server without unpacking a bundle.
@@ -638,23 +719,33 @@ capture with a known dimension in shot.
 
 ## Known gaps
 
-- **Section plane does not work** and its panel is hidden (`data-incomplete` in
-  `viewer.html`). Enabling the edit does erase splats and the SDF's `invert`
-  flag does swap which side, but the plane's position and axis never take
-  effect — the cut always lands in the same place. Verified against Spark 2.1.0
-  that the SDF's transform updates correctly and the edit is collected; forcing
-  `updateGenerator()`, `spark.setDirty()` and a full rebuild all leave the
-  render byte-identical. A section *box* built from a `BOX` SDF is the likely
-  workaround. See the note on `Viewer.setSection()`.
+- **The generator is Windows-only and needs an NVIDIA GPU with CUDA.** Its
+  programs are Windows builds in `bin\`, and COLMAP's dense stage requires
+  CUDA. The viewer has no such limit.
+- **No absolute accuracy test yet** (Tier 3 above): nothing has yet compared a
+  real capture against a site of known dimensions.
+- **The trim panel's frame-count estimate is unverified** in an ordinary
+  browser window — see *Trimming the clip*.
 - Level-of-detail is only built above 1,000,000 splats
   (`LOD_THRESHOLD` in `viewer.js`). Below that every splat renders: LOD
   subsamples, which costs picking accuracy on small scenes for no visible gain.
   Note that `SplatMesh`'s own `lod: true` option loads an *empty* mesh for any
   file with no LOD tree of its own — the tree has to be built after loading.
-- Large files are slow to open: a 675 MB / 3M-splat Postshot export takes ~17 s,
-  and the whole file is read into memory before parsing. Transcoding to SPZ on
-  export (Spark ships `SpzWriter` / `transcodeSpz`) is the obvious answer and is
-  not built yet.
+- Large **source** files are slow to open: a 675 MB / 3M-splat Postshot export
+  takes ~17 s, and the whole file is read into memory before parsing. Exports
+  are not affected — they are transcoded to SPZ (see *SPZ compression*), and the
+  generator writes SPZ beside every `.ply` it trains.
+
+### Closed
+
+- **The section tool works.** It was first built as a *plane*, whose position
+  and axis never took effect: Spark 2.1.0's plane SDF keeps its inside in the
+  plane's local −Z half-space, while the old code rotated local +Y onto the cut
+  normal, so the cut stayed perpendicular to the intended one, pinned through
+  the scene centre. It is now a **box** (`SplatEditSdfType.BOX`), which has no
+  axis convention to trip over and is the more useful tool anyway — slabs, not
+  just cuts. `acceptance.html` checks it against exactly that failure. Old
+  `.dlscene` files with a plane still load, converted to one face of the box.
 - Level-of-detail is unproven. Building it on a 514k-splat capture took 2.3 s and
   changed nothing visible; 3M splats render fine without it. The 1M threshold is
   a guess that has not been shown to earn its keep.
@@ -675,19 +766,29 @@ also tells you whether the file is already metric.
 
 ## Licences and credit
 
+**Apache License 2.0**, Digital Landscapes — `LICENSE` at the repository root.
+The full account of third-party code and prior work is in `NOTICE` there; in
+short:
+
 Bundled third-party code, both MIT, with licence files alongside:
-three.js (`static/vendor/three/`) and Spark by World Labs
-(`static/vendor/spark/`).
+three.js r185 (`static/vendor/three/`) and Spark 2.1.0 by World Labs
+(`static/vendor/spark/`). The fonts are SIL OFL, with their texts in
+`static/fonts/`.
 
 Called, not bundled: **COLMAP** (poses, and the dense pipeline behind the
-measurable mesh), **Brush** (splat training), **ffmpeg**, and **Depth Anything
-V2** for the single-photograph route — each under its own licence, in `bin\`
-and the venv.
+measurable mesh), **Brush** (splat training), **ffmpeg**, **Depth Anything V2**
+for the single-photograph route and **YuNet** for the privacy mask — each under
+its own licence, in `bin\` and the venv, none in the repository.
+
+The representation itself is **3D Gaussian Splatting**: Kerbl, Kopanas,
+Leimkühler and Drettakis, *"3D Gaussian Splatting for Real-Time Radiance Field
+Rendering"*, ACM Transactions on Graphics 42(4), 2023,
+[doi:10.1145/3592433](https://doi.org/10.1145/3592433).
 
 **Methods implemented here from published work, rather than vendored:**
 
 - The ground filter in `tools\ground_dem.py` is the **cloth simulation filter**
-  of Zhang, Qi, Wang, Wang, Chen, Yan and Yan, *"An Easy-to-Use Airborne LiDAR
+  of Zhang, Qi, Wan, Wang, Xie, Wang and Yan, *"An Easy-to-Use Airborne LiDAR
   Data Filtering Method Based on Cloth Simulation"*, Remote Sensing 8(6):501,
   2016, [doi:10.3390/rs8060501](https://doi.org/10.3390/rs8060501) — written
   here from the paper's description, with its documented weakness on low and
