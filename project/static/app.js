@@ -145,8 +145,12 @@ function syncGroups() {
     // to drop onto (live, 2026-09-25, found by Marc before class). Locally a
     // generator fold always showed, and until that morning the Test scenes
     // fold did too, so it never surfaced.
+    // Such a section is left to its OWN logic entirely: the first form of this
+    // fix set it visible, which un-hid the Terrain panel (own content too,
+    // shown only for a scene made here) on an empty page.
     const own = [...group.children].some((el) => !el.matches("details.sub") && !el.hidden);
-    group.parentElement.hidden = !own && subs.every((el) => el.hidden);
+    if (own) continue;
+    group.parentElement.hidden = subs.every((el) => el.hidden);
   }
   badge("b-import", generatedName ? generatedName : (sourceInfo ? sourceInfo.name : ""));
   badge("b-display", viewer.mesh ? `${tools.viewpoints.length || ""}` : "");
