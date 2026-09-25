@@ -217,7 +217,11 @@ export class Viewer {
 
     // If the pipeline exported capture cameras beside this file, open from one
     // of them rather than a synthetic orbit angle.
-    this.captureCameras = null;
+    // setCaptureCameras(null), not a bare "= null": it also resets the scene's
+    // vertical. Found 2026-09-25 -- a photo scene opened after a video kept the
+    // video's camera-derived up (4.9° off on IMG_1988 -> birch_mire_depth), so
+    // it orbited about a tilted axis and the level control claimed cameras.
+    this.setCaptureCameras(null);
     this.captureIndex = 0;
     if (url) await this._tryLoadCaptureCameras(url);
 
@@ -228,6 +232,7 @@ export class Viewer {
   clear() {
     if (this._edit) { this._edit.removeFromParent(); this._edit = null; this._sdf = null; }
     if (this._sectionHelper) { this._sectionHelper.removeFromParent(); this._sectionHelper = null; }
+    if (this._sunHelper) this.setSunArrows(null, null);
     if (this.mesh) {
       this.scene.remove(this.mesh);
       this.mesh.dispose();
@@ -1095,6 +1100,9 @@ export class Viewer {
     const helper = this._sectionHelper;
     const helperWas = helper ? helper.visible : false;
     if (hideScaffolding && helper) helper.visible = false;
+    const sunHelper = this._sunHelper;           // the sun and north arrows: tools too
+    const sunWas = sunHelper ? sunHelper.visible : false;
+    if (hideScaffolding && sunHelper) sunHelper.visible = false;
     this.renderer.setPixelRatio(ratio);
     this.renderer.setSize(cssW, cssH, false);
 
@@ -1141,7 +1149,42 @@ export class Viewer {
       this.renderer.setPixelRatio(screenRatio);
       this.renderer.setSize(cssW, cssH, false);
       if (helper) helper.visible = helperWas;
+      if (sunHelper) sunHelper.visible = sunWas;
     }
+  }
+
+  /* -------------------------------------------------------- sun and north */
+
+  /**
+   * Two arrows from the middle of the scene: towards the sun, and north along
+   * the ground. World-space unit vectors, either may be null; nothing at all
+   * clears them. Drawn over the splats (no depth test) because an arrow hidden
+   * inside a hedge says nothing; left out of stills like the section outline.
+   */
+  setSunArrows(toSun, north) {
+    if (this._sunHelper) {
+      this.scene.remove(this._sunHelper);
+      this._sunHelper.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+      this._sunHelper = null;
+    }
+    if (!this.mesh || (!toSun && !north)) return;
+    const box = this.frameBounds();
+    const centre = box ? box.getCenter(new THREE.Vector3()) : new THREE.Vector3();
+    const r = this.sceneRadius || 1;
+    const group = new THREE.Group();
+    const arrow = (dir, length, color) => {
+      const a = new THREE.ArrowHelper(new THREE.Vector3().fromArray(dir).normalize(),
+        centre, length, color, length * 0.2, length * 0.1);   // WebGL lines are 1 px: the head carries it
+      a.traverse((o) => {
+        if (o.material) { o.material.depthTest = false; o.material.transparent = true; }
+        o.renderOrder = 999;
+      });
+      group.add(a);
+    };
+    if (north) arrow(north, r * 0.45, 0xfdfcf9);       // --on-stage
+    if (toSun) arrow(toSun, r * 0.8, 0xd9c39a);        // the view wedge's warm tone
+    this.scene.add(group);
+    this._sunHelper = group;
   }
 
   /* ------------------------------------------------------------------ loop */

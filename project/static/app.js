@@ -7,6 +7,10 @@ import {
 } from "./scene.js";
 import { photoSceneGlb, splatPlyForBlender } from "./gltf.js";
 import { PlanView } from "./plan.js";
+import {
+  sunPosition, parseWhen, toUtcMs, formatOffset, parseOffset, compassWord,
+  northFromBearing, northFromShadow, sunVector, bearingOf, horizontal,
+} from "./sun.js";
 
 const $ = (id) => document.getElementById(id);
 const BUILD = "2026-09-25";
@@ -89,6 +93,7 @@ async function loadSource(next, label, fromGenerated = null, sample = null) {
     tools.scaleFactor = 1;
     display.section = freshSection();
     display.detail = null;   // a new scene starts at this computer's default
+    resetSun();              // a new scene has no north until one is set
     onSceneChanged();
     status(`${info.name} — ${info.count.toLocaleString("en-US")} splats`);
   } catch (err) {
@@ -101,7 +106,7 @@ function onSceneChanged() {
   const loaded = !!viewer.mesh;
   for (const id of ["panel-display", "panel-scale", "panel-tools",
                     "panel-section", "panel-notes", "panel-views", "panel-scene",
-                    "panel-still"]) {
+                    "panel-still", "panel-sun"]) {
     // panels marked data-incomplete stay hidden until their feature works
     $(id).hidden = !loaded || $(id).hasAttribute("data-incomplete");
   }
@@ -126,6 +131,7 @@ function onSceneChanged() {
   // section box resets to the whole scene when a new scene arrives
   syncSectionUi();
   refreshLists();
+  applySun();
   syncGroups();
 }
 
@@ -264,8 +270,9 @@ async function exportPhotoForBlender(withSplat) {
       ? "Scale is the depth model's ESTIMATE (1 unit ~ 1 m), not a measurement."
       : `Calibrated in the viewer: 1 unit = ${scale.toFixed(4)} m.`;
     const fill = $("gltf-fill").checked;
+    const sun = sunForExport();
     const { blob: glbBlob, stats } = photoSceneGlb({
-      splats: viewer.mesh.packedSplats, record: photoRecord, photo, scale, note, fill,
+      splats: viewer.mesh.packedSplats, record: photoRecord, photo, scale, note, fill, sun,
     });
     const stem = stillStem();
     const how = `In Blender set the output resolution to ${photo.width} × ${photo.height} to `
@@ -297,6 +304,11 @@ async function exportPhotoForBlender(withSplat) {
         estimated ? "Scale: the depth model's ESTIMATE, 1 unit ~ 1 m -- not a measurement."
                   : `Scale: calibrated in the viewer, 1 unit = ${scale.toFixed(4)} m.`,
         "A scene from one photograph is 2.5D: right from near the camera, stretched away from it.",
+        ...(stats.sun ? [
+          `Sun: a Sun lamp where the sun stood (${sun.extras.azimuth_deg}° from north, `
+            + `${sun.extras.elevation_deg}° up). The photo already holds the real light; the`,
+          "lamp lights what you ADD. North: the empty called North; its Y axis points north.",
+        ] : stats.north ? ["North: the empty called North; its Y axis points north (the sun was down)."] : []),
         "",
       ].join("\r\n");
       const enc = new TextEncoder();
@@ -308,7 +320,8 @@ async function exportPhotoForBlender(withSplat) {
       ]), saved);
     }
     $("gltf-state").textContent = `Saved ${saved} — ${stats.triangles.toLocaleString("en-US")} `
-      + `triangles (${surface})${withSplat ? `, ${viewer.splatCount.toLocaleString("en-US")} splats` : ""}. ${how}`;
+      + `triangles (${surface})${withSplat ? `, ${viewer.splatCount.toLocaleString("en-US")} splats` : ""}`
+      + `${stats.sun ? ", with the sun and north" : stats.north ? ", with north (the sun was down)" : ""}. ${how}`;
     window.dl.lastGltf = { stats, blob: glbBlob, withSplat };   // for the browser-side checks
   } catch (err) {
     $("gltf-state").textContent = `⚠ ${err.message}`;
@@ -1644,6 +1657,302 @@ $("source-copy").onclick = async () => {
   catch { status(text, 8000); }
 };
 
+/* ------------------------------------------------------- sun and north */
+
+/* The sun at the moment of capture (static/sun.js) and north in the scene.
+ * North is kept in the SCENE FILE'S OWN FRAME (the splat's local, COLMAP-style
+ * axes), with the up it was set against, so flipping the up-axis does not turn
+ * it. Where it came from is kept too, because each way has its own error. */
+const sunState = { north: null, up: null, source: null, detail: "", measured: null };
+let sunSeededFor = null;          // the scene whose source already filled the fields
+
+function meshRotation() { return viewer.mesh ? viewer.mesh.matrixWorld.elements : null; }
+function dirToWorld(v) {
+  const e = meshRotation();
+  if (!e || !v) return v;
+  return [e[0] * v[0] + e[4] * v[1] + e[8] * v[2],
+          e[1] * v[0] + e[5] * v[1] + e[9] * v[2],
+          e[2] * v[0] + e[6] * v[1] + e[10] * v[2]];
+}
+function dirToLocal(v) {                  // the mesh only turns, so the inverse is the transpose
+  const e = meshRotation();
+  if (!e || !v) return v;
+  return [e[0] * v[0] + e[1] * v[1] + e[2] * v[2],
+          e[4] * v[0] + e[5] * v[1] + e[6] * v[2],
+          e[8] * v[0] + e[9] * v[1] + e[10] * v[2]];
+}
+/* The scene's vertical, world space: the capture cameras' mean up when they
+ * have one; a photo's own "up" (its image -Y); else world +Y. */
+function worldUp() {
+  if (viewer.upFromCameras) return viewer._up.toArray();
+  if (viewer.photoCamera) return dirToWorld([0, -1, 0]);
+  return [0, 1, 0];
+}
+/* The horizontal direction the page and the slider are reckoned from: the
+ * way the walk heads, or the way the photo faces. */
+function referenceDirection() {
+  const cams = viewer.captureCameras;
+  let d = null;
+  if (cams && cams.length > 1) {
+    const a = cams[0].position, b = cams[cams.length - 1].position;
+    d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  } else if (viewer.photoCamera) d = dirToWorld([0, 0, 1]);
+  else d = [0, 0, -1];
+  return horizontal(d, worldUp()) || horizontal([1, 0, 0], worldUp());
+}
+
+function resetSun() {
+  Object.assign(sunState, { north: null, up: null, source: null, detail: "", measured: null });
+  for (const id of ["sun-when", "sun-zone", "sun-lat", "sun-lon"]) $(id).value = "";
+  $("sun-when-src").textContent = $("sun-where-src").textContent = "";
+  sunSeededFor = null;
+  endShadowPick();
+}
+
+/* Fill the fields from the source file -- only the ones still empty, so a
+ * restored or typed value wins -- and take a photo's compass for north when
+ * north has not been set another way. */
+async function seedSun() {
+  const key = currentSample?.name || generatedName || sourceInfo?.name;
+  if (!viewer.mesh || sunSeededFor === key) { applySun(); return; }
+  sunSeededFor = key;
+  // a scene made here may already have its north beside it
+  if (generatedName && hasBackend && !sunState.north) {
+    try {
+      const saved = await (await fetch(`/api/sun/${encodeURIComponent(generatedName)}`)).json();
+      if (saved?.north && saved?.up) {
+        Object.assign(sunState, { north: saved.north, up: saved.up,
+          source: saved.north_source || "hand", detail: saved.north_detail || "",
+          measured: saved.measured_elevation_deg ?? null });
+        if (saved.local_time && !$("sun-when").value) $("sun-when").value = saved.local_time;
+        if (saved.utc_offset && !$("sun-zone").value) $("sun-zone").value = saved.utc_offset;
+        if (saved.lat != null && !$("sun-lat").value) $("sun-lat").value = saved.lat;
+        if (saved.lon != null && !$("sun-lon").value) $("sun-lon").value = saved.lon;
+      }
+    } catch { /* nothing saved */ }
+  }
+  const m = sourceMeta;
+  const from = m?.kind === "video" ? "from the video" : "from the photo";
+  const t = parseWhen(m?.when);
+  if (t && !$("sun-when").value) {
+    $("sun-when").value = `${t.date}T${t.time}`;
+    if (t.offsetMin != null) {
+      $("sun-zone").value = formatOffset(t.offsetMin);
+      $("sun-when-src").textContent = from;
+    } else {
+      // EXIF without OffsetTimeOriginal: the clock time, but not its zone --
+      // this computer's zone on that date is a guess, and is said to be one
+      const [Y, Mo, D] = t.date.split("-").map(Number), [h, mi] = t.time.split(":").map(Number);
+      $("sun-zone").value = formatOffset(-new Date(Y, Mo - 1, D, h, mi).getTimezoneOffset());
+      $("sun-when-src").textContent = `${from} · zone assumed`;
+    }
+  }
+  const w = m?.where;
+  if (w && !$("sun-lat").value && !$("sun-lon").value) {
+    $("sun-lat").value = w.lat.toFixed(4);
+    $("sun-lon").value = w.lon.toFixed(4);
+    $("sun-where-src").textContent = `${from}'s GPS`;
+  }
+  // a photograph's compass: GPSImgDirection is the way the phone faced, and the
+  // photo scene looks down its own +Z with image-up = -Y
+  if (!sunState.north && viewer.photoCamera && w?.heading_deg != null) {
+    const up = [0, -1, 0];
+    Object.assign(sunState, { north: northFromBearing([0, 0, 1], w.heading_deg, up), up,
+      source: "compass", detail: w.heading_ref || "", measured: null });
+    applySun({ save: true });
+    return;
+  }
+  applySun();
+}
+
+/* The time and place in the fields -> { utcMs, lat, lon }, or { why }. */
+function sunInputs() {
+  const when = $("sun-when").value, lat = parseFloat($("sun-lat").value), lon = parseFloat($("sun-lon").value);
+  if (!when) return { why: "Give the date and time to find the sun." };
+  const off = parseOffset($("sun-zone").value);
+  if (off == null) return { why: "Give the offset from UTC, e.g. +02:00." };
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180)
+    return { why: "Give the place as latitude and longitude." };
+  const [date, time] = when.split("T");
+  return { utcMs: toUtcMs(date, time || "12:00:00", off), lat, lon };
+}
+function sunNow() {
+  const i = sunInputs();
+  return i.why ? { why: i.why } : { ...sunPosition(i.utcMs, i.lat, i.lon), ...i };
+}
+
+let sunNorthSig = "";
+let sunSaveTimer = 0;
+/* `save`: only when the USER changed something (or a photo's compass set
+ * north). Saving on every refresh raced the read-back: opening a scene reset
+ * north, saved "none" and removed sun.json before seedSun had read it. */
+function applySun({ save = false } = {}) {
+  const s = sunNow();
+  const up = worldUp();
+  const northW = sunState.north ? horizontal(dirToWorld(sunState.north), up) : null;
+  const toSun = northW && !s.why ? sunVector(s.azimuth, s.elevation, up, northW) : null;
+
+  // the sun
+  $("sun-state").textContent = s.why ? s.why
+    : s.elevation > 0
+      ? `The sun stood ${s.elevation.toFixed(1)}° above the horizon, in the `
+        + `${compassWord(s.azimuth)} (${Math.round(s.azimuth)}° from north).`
+      : `The sun was ${Math.abs(s.elevation).toFixed(1)}° below the horizon — no direct sunlight.`;
+
+  // north
+  let text;
+  if (!sunState.north) {
+    text = "Not set. A photo with a compass reading sets it; otherwise take it "
+      + "from a shadow, or turn it by hand.";
+  } else if (sunState.source === "compass") {
+    text = "From the photo's compass"
+      + (sunState.detail === "magnetic north"
+        ? " — MAGNETIC north, which differs from true north by the local declination; turn to correct."
+        : sunState.detail ? ` (${sunState.detail}).` : ".")
+      + " A phone compass is often several degrees off.";
+  } else if (sunState.source === "shadow") {
+    const m = sunState.measured;
+    text = "From a shadow."
+      + (m != null && !s.why
+        ? ` The sun's height there measures ${m.toFixed(1)}°, computed ${s.elevation.toFixed(1)}° `
+          + `— ${Math.abs(m - s.elevation).toFixed(1)}° apart, a check on the scene's level and the clicks.`
+        : "");
+  } else {
+    text = "Set by hand.";
+  }
+  $("north-state").textContent = text;
+
+  // the slider: the bearing of the walk or the photo, which turns north
+  const ref = viewer.mesh ? referenceDirection() : null;
+  $("north-turn-label").textContent = viewer.captureCameras?.length > 1 ? "The walk heads"
+    : viewer.photoCamera ? "The photo faces" : "Turn north";
+  if (northW && ref) {
+    const b = Math.round(bearingOf(ref, up, northW)) % 360;
+    $("north-turn").value = b;
+    $("north-turn-val").textContent = `${b}° · ${compassWord(b)}`;
+  } else {
+    $("north-turn-val").textContent = "—";
+  }
+  $("north-clear").disabled = !sunState.north;
+  $("north-shadow").disabled = !viewer.mesh;
+
+  // the scene and the plan
+  const show = $("sun-show").checked;
+  const up_ = !s.why && s.elevation > 0;
+  viewer.setSunArrows(show && up_ ? toSun : null, show ? northW : null);
+  plan.setSun(northW, up_ ? toSun : null);
+  const sig = northW ? northW.map((x) => x.toFixed(4)).join() : "";
+  if (sig !== sunNorthSig) { sunNorthSig = sig; rebuildPlan(); }
+
+  // kept beside a scene made here, for a reload and for Blender
+  if (save && generatedName && hasBackend && viewer.mesh) {
+    clearTimeout(sunSaveTimer);
+    // name AND content captured now: a scene switch within the delay must not
+    // write the next scene's state into this one's file
+    const name = generatedName, body = JSON.stringify(sunRecord());
+    sunSaveTimer = setTimeout(() => {
+      fetch(`/api/sun/${encodeURIComponent(name)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body,
+      }).catch(() => {});
+    }, 600);
+  }
+}
+
+/* North and the sun in the scene file's own frame -- what exports carry.
+ * Date, time and place only when the box says they may go. */
+function sunRecord() {
+  if (!sunState.north) return { north: null };
+  const s = sunNow();
+  const up = sunState.up;
+  const north = horizontal(sunState.north, up);
+  const rec = { north, up, north_source: sunState.source, north_detail: sunState.detail || undefined,
+                measured_elevation_deg: sunState.measured ?? undefined };
+  if (!s.why) {
+    rec.azimuth_deg = Math.round(s.azimuth * 100) / 100;
+    rec.elevation_deg = Math.round(s.elevation * 100) / 100;
+    rec.to_sun = sunVector(s.azimuth, s.elevation, up, north);
+  }
+  if ($("sun-private").checked && !s.why) {
+    rec.local_time = $("sun-when").value;
+    rec.utc_offset = $("sun-zone").value;
+    rec.utc = new Date(s.utcMs).toISOString();
+    rec.lat = s.lat; rec.lon = s.lon;
+  }
+  return rec;
+}
+function sunForExport() {
+  const r = sunRecord();
+  if (!r.north) return null;
+  const extras = { north_source: r.north_source, azimuth_deg: r.azimuth_deg,
+                   elevation_deg: r.elevation_deg };
+  if (r.utc) Object.assign(extras, { local_time: r.local_time, utc_offset: r.utc_offset,
+                                     utc: r.utc, lat: r.lat, lon: r.lon });
+  return { north: r.north, up: r.up, toSun: r.to_sun || null,
+           elevation: r.elevation_deg ?? -90, extras };
+}
+
+/* ---- setting north ---- */
+
+$("north-turn").oninput = () => {
+  const ref = referenceDirection(), up = worldUp();
+  const northW = northFromBearing(ref, Number($("north-turn").value), up);
+  Object.assign(sunState, { north: dirToLocal(northW), up: dirToLocal(up),
+    source: "hand", detail: "", measured: null });
+  applySun({ save: true });
+};
+$("north-clear").onclick = () => {
+  Object.assign(sunState, { north: null, up: null, source: null, detail: "", measured: null });
+  applySun({ save: true });
+};
+for (const id of ["sun-when", "sun-zone", "sun-lat", "sun-lon"]) {
+  $(id).addEventListener("input", () => {
+    if (id === "sun-when" || id === "sun-zone") $("sun-when-src").textContent = "typed";
+    else $("sun-where-src").textContent = "typed";
+    applySun({ save: true });
+  });
+}
+$("sun-show").onchange = () => applySun();
+$("sun-private").onchange = () => applySun({ save: true });
+
+/* From a shadow: the top of something upright, then the tip of its shadow.
+ * The measuring tools get every other click, as before. */
+let shadowPicks = null;
+function endShadowPick() {
+  shadowPicks = null;
+  $("north-shadow").textContent = "From a shadow";
+  tools.onHint(null);
+}
+$("north-shadow").onclick = () => {
+  if (shadowPicks) { endShadowPick(); return; }
+  const s = sunNow();
+  if (s.why) { status(`${s.why} The shadow is read against the sun's position then.`, 6000); return; }
+  if (s.elevation < 2) { status("The sun was at or below the horizon then — there is no shadow to use.", 6000); return; }
+  shadowPicks = [];
+  $("north-shadow").textContent = "Cancel";
+  tools.onHint("Click the TOP of something upright — a post, a corner, a pole.");
+};
+const toolsPick = viewer.onPick;
+viewer.onPick = (p) => {
+  if (!shadowPicks) { toolsPick(p); return; }
+  shadowPicks.push(p.toArray());
+  if (shadowPicks.length === 1) {
+    tools.onHint("Now click the tip of its shadow, on the ground.");
+    return;
+  }
+  const [top, tip] = shadowPicks;
+  endShadowPick();
+  const s = sunNow(), up = worldUp();
+  const r = northFromShadow(top, tip, up, s.azimuth);
+  if (!r || r.measuredElevation <= 0) {
+    status("The shadow's tip has to be LOWER than the top — click the top first, then the tip.", 7000);
+    return;
+  }
+  Object.assign(sunState, { north: dirToLocal(r.north), up: dirToLocal(up),
+    source: "shadow", detail: "", measured: r.measuredElevation });
+  applySun({ save: true });
+  status("North set from the shadow.", 4000);
+};
+
 /* Colour by viewing angle. Offered so a stray tint can be checked: if it goes
  * when this is off, it was the extrapolated colour of a direction the camera
  * never looked from. Disabled, and says why, on a scene with one colour per
@@ -1673,6 +1982,7 @@ $("flip-btn").onclick = () => {
   $("flip-btn").classList.toggle("on", viewer.flip);
   applySection();
   rebuildPlan();
+  applySun();                     // north is kept in the file's frame: it turns with it
 };
 
 /* ----------------------------------------------------------------- the plan */
@@ -1996,7 +2306,8 @@ async function syncFromCaptureRecord() {
   }
   refreshLists();
   syncGroups();
-  refreshSourcePanel();          // after photoRecord: it compares the lens with it
+  await refreshSourcePanel();    // after photoRecord: it compares the lens with it
+  await seedSun();               // time, place and a photo's compass from the source
   if (viewer.photoCamera) rebuildPlan();   // a photo scene's camera is known only now
 }
 
@@ -2271,6 +2582,13 @@ $("scene-save").onclick = async () => {
   try {
     status("Hashing source…", 0);
     const bytes = await currentBytes();
+    // north travels with the scene file; time and place only if allowed
+    display.sun = sunState.north ? {
+      north: sunState.north, up: sunState.up, source: sunState.source,
+      detail: sunState.detail, measured: sunState.measured,
+      ...($("sun-private").checked ? { when: $("sun-when").value, zone: $("sun-zone").value,
+        lat: $("sun-lat").value, lon: $("sun-lon").value } : {}),
+    } : null;
     const scene = buildScene({
       viewer, tools, display,
       source: {
@@ -2318,6 +2636,15 @@ async function loadSceneFile(file) {
     $("blur-val").textContent = display.blur.toFixed(2);
     viewer.setBlur(display.blur);
     viewer.setViewColour(display.viewColour);
+    const sun = d.sun;
+    if (sun?.north && sun?.up) {
+      Object.assign(sunState, { north: sun.north, up: sun.up, source: sun.source || "hand",
+        detail: sun.detail || "", measured: sun.measured ?? null });
+      if (sun.when) $("sun-when").value = sun.when;
+      if (sun.zone) $("sun-zone").value = sun.zone;
+      if (sun.lat) $("sun-lat").value = sun.lat;
+      if (sun.lon) $("sun-lon").value = sun.lon;
+    }
     syncSectionUi();
     applySection();
     onSceneChanged();

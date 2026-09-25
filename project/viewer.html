@@ -251,6 +251,53 @@
           <ul id="view-list" class="list"></ul>
         </div>
       </details>
+
+      <!-- Sun and north (static/sun.js). The sun's position for a time and a
+           place is exact; which way north is in a scene is not -- a solve has
+           no compass -- so north is SET: a photo's compass, a shadow, or by
+           hand. Time and place come from the source file and can be typed. -->
+      <details class="sub" id="panel-sun" hidden>
+        <summary class="subhead">Sun and north</summary>
+        <div class="sub-body">
+          <div class="field">
+            <span>When <em id="sun-when-src"></em></span>
+            <div class="row">
+              <input type="datetime-local" id="sun-when" step="1" aria-label="Local date and time">
+              <input type="text" id="sun-zone" placeholder="+01:00" aria-label="Offset from UTC">
+            </div>
+          </div>
+          <div class="field">
+            <span>Where <em id="sun-where-src"></em></span>
+            <div class="row">
+              <input type="number" id="sun-lat" step="0.0001" min="-90" max="90" placeholder="latitude °N" aria-label="Latitude">
+              <input type="number" id="sun-lon" step="0.0001" min="-180" max="180" placeholder="longitude °E" aria-label="Longitude">
+            </div>
+          </div>
+          <div class="meta" id="sun-state"></div>
+          <div class="subhead">north</div>
+          <div class="meta" id="north-state"></div>
+          <div class="row">
+            <button id="north-shadow" class="ghost">From a shadow</button>
+            <button id="north-clear" class="ghost">Clear</button>
+          </div>
+          <label class="field">
+            <span><span id="north-turn-label">Turn north</span> <em id="north-turn-val">&mdash;</em></span>
+            <input type="range" id="north-turn" min="0" max="359" step="1" value="0">
+          </label>
+          <label class="check"><input type="checkbox" id="sun-show" checked>
+            Show the sun and north</label>
+          <label class="check"><input type="checkbox" id="sun-private">
+            Exports carry the date, time and place</label>
+          <div class="meta why">The sun's position for the time and place above is
+            exact. Its direction in the scene is only as good as north: a phone
+            compass is often several degrees off, a shadow is as good as the two
+            points you click. The splats already hold the real light — the sun is
+            for what you add in Blender, lit and shadowed like the footage. Change
+            the time to study another hour. Date, time and place are personal
+            data: they stay on this computer, and go into an export only if you
+            tick the box.</div>
+        </div>
+      </details>
     </div>
   </details>
 

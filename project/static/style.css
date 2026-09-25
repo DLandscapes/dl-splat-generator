@@ -255,6 +255,12 @@ select {
   font: inherit; font-size: .82rem; padding: 6px 8px;
   border: 1px solid var(--line); border-radius: 6px; background: var(--sheet); color: var(--ink);
 }
+/* typed values (the sun's time and place) sit in the select's box */
+input[type=number], input[type=text], input[type=datetime-local] {
+  font: inherit; font-size: .82rem; padding: 6px 8px; min-width: 0;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--sheet); color: var(--ink);
+}
+#sun-zone { flex: 0 0 72px; }
 
 .list { list-style: none; display: flex; flex-direction: column; gap: 5px; }
 .list li {

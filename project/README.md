@@ -97,6 +97,7 @@ tools/
   acceptance.html      measurement acceptance test (see below)
   smoke_capture.py     the generator's end-to-end gate
   sparse_model_test.py regression test for the sparse-model choice
+  sun_test.mjs         the sun's position and the geometry of north (node)
   pose_regression.py   camera-path drift check (Tier 2)
 data/
   calibration.ply      markers at exactly known separations, 50,268 splats
@@ -223,8 +224,11 @@ wedge for its field of view; a photo scene shows the photo's camera and field of
 view instead. Clicking near the path stands at that capture position.
 
 "Above" is the scene's own vertical (the capture cameras' mean up, as levelling
-uses); the page is turned so the walk heads up — **not north-up**: a solve has
-no compass, and a phone's single GPS fix cannot turn it. Built once per scene
+uses); until north is set the page is turned so the walk heads up — **not
+north-up**: a solve has no compass, and a phone's single GPS fix cannot turn it.
+Once north is set (*Sun and north*, below) the plan is north-up, with an N at the
+top right and the sun as a disc on the rim, a dashed ray towards the middle;
+a photo scene's wedge then turns to its bearing. Built once per scene
 (57 ms for the 218 k-splat Netherlands clip, 0.48 s for a 2 M-splat capture,
 reading at most 400 k splats), redrawn only when the view changes.
 
@@ -279,6 +283,53 @@ new captures and photo scenes record it as `source_meta` in `capture.json`. It
 stays on the machine — coordinates can be copied, not sent to a map — and
 `make_sample.py` drops the location from a sample unless `--keep-location`:
 GPS, time and device together are personal data.
+
+### Sun and north
+
+*Display → Sun and north* (2026-09-25). Two separate questions with different
+errors:
+
+**Where the sun stood** is astronomy. `static/sun.js` implements the equations
+of NOAA's Solar Calculator (after Meeus), with standard refraction — about
+0.01° near today. The **when** (local date and time, and its offset from UTC)
+and **where** (latitude, longitude) come from the source file and can be typed;
+EXIF without `OffsetTimeOriginal` gives a clock time but no zone, so this
+computer's zone on that date is filled in and marked *zone assumed*.
+
+**Which way north lies in the scene** has to be set, three ways:
+
+| | how | error |
+| --- | --- | --- |
+| compass | a photo's `GPSImgDirection` is the way the phone faced; the photo scene looks down its +Z with image-up = −Y, so north is that direction turned back anticlockwise by the heading. Set by itself when the file has it | a phone compass is often several degrees off; magnetic headings (`GPSImgDirectionRef = M`) are flagged; the photo is taken as level |
+| shadow | click the **top** of something upright, then the **tip of its shadow**: the ray tip→top points at the sun, whose bearing at that moment is known, so north follows. The ray's own height is shown against the computed elevation — a check on the scene's level and the clicks | as good as the two clicks; needs the sun up (≥ 2°) |
+| by hand | the slider is the bearing of the walk (first to last camera) or of the photo's view: turn it until the scene agrees with a map | yours |
+
+North is kept in the **scene file's own frame** (the splat's COLMAP-style
+axes: Y down, Z forward) with the up it was set against, so flipping the
+up-axis turns it with the scene. The viewer draws two arrows from the scene's
+middle — north along the ground (light), towards the sun (warm) — over the
+splats; stills leave them out, like the section outline.
+
+**Kept:** in the `.dlscene` (north, up, how it was set); for a scene made here
+also in `output/<name>/sun.json` via `GET/POST /api/sun/<name>` (vectors in the
+file's frame, azimuth and elevation, how north was set) — read back on reload,
+and the file the Blender package route is to read (handover to the Capture Walk
+session, `output\for BLE\HANDOVER - sun - 001.txt`). **Date, time and place are
+personal data**: they go into `sun.json`, a `.dlscene` or an export only when
+*Exports carry the date, time and place* is ticked. It is saved only when you
+change something — saving on every refresh raced the read-back and removed the
+file when a scene opened (found in testing, fixed before release).
+
+**Checked** (`node tools/sun_test.mjs`, 16 checks, expectations fixed before
+the first run): NREL's SPA reference case (Golden CO, 17 Oct 2003 12:30:30
+−07:00 → zenith 50.11162°, azimuth 194.34024°) reproduced to 0.003° and
+0.002°; the midnight sun at Tromsø on 21 June stays up at 3.31° (geometry says
+3.09° + refraction); the sun never rises there on 21 December (−2.98°); time
+formats; a photo facing east has north to its left; a shadow in a tilted,
+turned synthetic scene gives north back exactly. In the app on IMG_1988: time
+and place filled from the video (11 Sep 2026 11:22 +02:00, 69.7051 N 19.0098 E →
+sun 23.6° up, 159°), north set by hand, then recovered from a shadow built
+from it with 0° error and the height read back as 23.6°.
 
 ### Hiding the explanations
 
@@ -947,6 +998,17 @@ It holds three objects:
   8 % are left out and the gaps stay.
 - **Photo backdrop** — only with the gaps kept: the photograph on a plane
   filling the camera's view just behind the farthest surface.
+- **Sun** and **North** — only once north is set (*Sun and north*): a
+  directional light (`KHR_lights_punctual`, 2,049 lux, which Blender's
+  importer turns into a **Sun lamp of strength 3 W/m²**) aimed from where the
+  sun stood, and an empty whose **Y axis points north** in Blender. The splat
+  and the photo already hold the real light; the lamp lights what is added.
+  `asset.extras.sun` records the azimuth, elevation and how north was set —
+  plus date, time and place only when that box is ticked. **Verified in Blender
+  5.2** with the nodes exported for `birch_mire_depth` (compass facing east,
+  21 Jun 2026 13:00 +02:00 at 69.65 N): Sun lamp, strength 3.0, shining
+  (−0.7201, 0.0561, −0.6916) against (−0.7202, 0.0561, −0.6915) expected; the
+  empty's Y axis (−1, 0, 0) — north, for a camera looking along +X.
 
 **With the splat (.zip)** adds the splat itself as a standard 3DGS `.ply` for a
 Gaussian-splat importer (Capture Walk imports one; Blender itself does not),

@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -339,6 +339,69 @@ def source_info(name: str):
     sys.path.insert(0, str(PROJECT / "tools"))
     import source_meta
     return source_meta.read(Path(rec["source"]))
+
+
+# ------------------------------------------------------------ sun and north
+
+# What output/<name>/sun.json may hold -- written by the viewer's Sun and north
+# panel, read back on reload and by Blender exports (see output\for BLE\
+# HANDOVER - sun - 001.txt). Vectors are in the scene file's own frame (the
+# COLMAP-style frame of the .ply: Y down, Z forward), unit length.
+SUN_VECTORS = ("north", "up", "to_sun")
+SUN_NUMBERS = ("azimuth_deg", "elevation_deg", "measured_elevation_deg", "lat", "lon")
+SUN_TEXTS = ("north_source", "north_detail", "local_time", "utc_offset", "utc")
+
+
+def _sun_path(name: str) -> Path:
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name)[:120]
+    folder = OUTPUT / safe
+    if not (folder / "capture.json").is_file():
+        raise HTTPException(404, f"no scene made here called {safe}")
+    return folder / "sun.json"
+
+
+@app.get("/api/sun/{name}")
+def sun_get(name: str):
+    """The north and sun set for this scene, or {} when none has been."""
+    path = _sun_path(name)
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+
+
+@app.post("/api/sun/{name}")
+def sun_put(name: str, payload: dict = Body(...)):
+    """Keep this scene's north and sun beside it. Only known fields are
+    written, and only finite numbers; a payload without north removes the file.
+    Date, time and place arrive only when the user ticked that they may."""
+    import math
+    path = _sun_path(name)
+    if not payload.get("north"):
+        path.unlink(missing_ok=True)
+        return {"ok": True, "removed": True}
+    out = {"format": "dlsun", "version": 1}
+    for key in SUN_VECTORS:
+        v = payload.get(key)
+        if v is None:
+            continue
+        if not (isinstance(v, list) and len(v) == 3
+                and all(isinstance(x, (int, float)) and math.isfinite(x) for x in v)):
+            raise HTTPException(400, f"{key} must be three finite numbers")
+        out[key] = [float(x) for x in v]
+    for key in SUN_NUMBERS:
+        v = payload.get(key)
+        if isinstance(v, (int, float)) and math.isfinite(v):
+            out[key] = float(v)
+    for key in SUN_TEXTS:
+        v = payload.get(key)
+        if isinstance(v, str) and len(v) <= 120:
+            out[key] = v
+    out["frame"] = "scene file (COLMAP-style: Y down, Z forward)"
+    path.write_text(json.dumps(out, indent=1), encoding="utf-8")
+    return {"ok": True}
 
 
 @app.get("/api/export/blender/{name}")

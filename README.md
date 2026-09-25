@@ -26,7 +26,7 @@ published.
 
 ### In your browser — nothing to install
 
-**https://digital-landscapes.com/splat-generator-app/v3/**
+**https://digital-landscapes.com/splat-generator-app/v4/**
 
 Open it in a current Chrome, Edge, Firefox or Safari and drop a splat file onto
 the window. The file is read by your browser on your own machine; it is not
@@ -91,8 +91,21 @@ capture position was never filmed from there, and that is where a scene guesses.
 **Colour by viewing angle** (Display) can be switched off to check whether a
 stray tint comes from such a guess. A **plan** under the navigation shows the
 scene from above — what the scan covers up to eye level, the camera path, and
-where you stand; click near the path to stand there. It is turned so the walk
-heads up the page, not north-up: a solve has no compass.
+where you stand; click near the path to stand there. Until north is set it is
+turned so the walk heads up the page, not north-up: a solve has no compass.
+
+**Sun and north.** From the date, time and place the source file records — or
+typed in — the tool works out where the sun stood (the NOAA solar-position
+equations, good to about a hundredth of a degree). Which way north lies in the
+scene has to be *set*: a photograph's compass reading sets it by itself; for a
+video, click the top of something upright and the tip of its shadow, and north
+follows from the sun's known bearing at that moment — the sun's height measured
+the same way is shown against the computed one, as a check. Or turn it by hand
+against a map. Then the plan is north-up, two arrows show north and the sun, and
+the Blender export carries a Sun lamp. The splats already hold the real light;
+the sun is for what you add in Blender, lit and shadowed like the footage —
+change the time to study another hour. Date, time and place are personal data:
+they stay on your computer and go into an export only if you tick the box.
 
 **Source.** A scene made from a photo or video lists what its file says about
 itself — when it was taken, where (the phone's GPS), with which device and
@@ -111,9 +124,11 @@ out as large as the chip allows, and says so.
 
 **Take a photo scene into Blender.** A scene made from one photograph exports
 as a single `.glb` file that Blender opens without any add-on (*File → Import →
-glTF 2.0*): the photo's camera exactly, the scene as a surface textured with the
-photograph, and the photograph as a backdrop. Rendered from that camera in
-Blender, it reproduces the photo.
+glTF 2.0*): the photo's camera exactly, and the scene as one surface textured
+with the photograph, its gaps filled (or kept, with the photograph as a
+backdrop). Rendered from that camera in Blender, it reproduces the photo. Once
+north is set it also holds a **Sun** lamp where the sun stood and an empty
+called **North** whose Y axis points north.
 
 **Save the scene.** A scene file (`.dlscene`) records the scale,
 measurements, notes, viewpoints and section beside the splat, so the work can

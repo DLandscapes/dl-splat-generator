@@ -20,6 +20,13 @@
  *   Photo backdrop  only with fill: false -- the photograph on a plane filling
  *                   the camera's view just behind the farthest surface, so the
  *                   kept gaps show the right pixels
+ *   Sun, North      only once north is set (Display -> Sun and north): a
+ *                   directional light (KHR_lights_punctual, which Blender imports
+ *                   as a Sun lamp) shining from where the sun stood at the chosen
+ *                   time, and an empty whose Y axis points north in Blender. The
+ *                   splat and the photo already hold the real light; the sun is
+ *                   for what is ADDED in Blender, so it is lit and shadowed like
+ *                   the footage. Date, time and place ride along only if asked.
  *
  * REBUILDING THE GRID. Every splat of a photo scene came from one pixel of a
  * stride-s grid: X = (x - w/2) z / f, Y = (y - h/2) z / f, f = (w/2) / tan(hfov/2).
@@ -60,7 +67,7 @@ export function workedSize(record, photoSize) {
  * height }; `scale` metres per scene unit (1 when uncalibrated: the depth
  * model's estimate). Returns { blob, stats }.
  */
-export function photoSceneGlb({ splats, record, photo, scale = 1, note = "", fill = true }) {
+export function photoSceneGlb({ splats, record, photo, scale = 1, note = "", fill = true, sun = null }) {
   const hfov = Number(record?.settings?.fov) || 65;
   const stride = Number(record?.settings?.stride) || 2;
   const size = workedSize(record, photo);
@@ -189,19 +196,45 @@ export function photoSceneGlb({ splats, record, photo, scale = 1, note = "", fil
     pbrMetallicRoughness: { baseColorTexture: { index: 0 }, metallicFactor: 0, roughnessFactor: 1 },
   });
 
+  // the sun and north, turned into glTF's frame like everything else
+  const sunNodes = [];
+  let lights = null;
+  if (sun?.north && sun?.up) {
+    const g = (v) => [v[0], -v[1], -v[2]];
+    const up = g(sun.up);
+    sunNodes.push({ name: "North", rotation: lookRotation(g(sun.north), up),
+      extras: { note: "In Blender this empty's Y axis points north." } });
+    if (sun.toSun && sun.elevation > 0) {
+      const toSun = g(sun.toSun);
+      lights = [{ type: "directional", name: "Sun", color: [1, 1, 1],
+                  intensity: SUN_LUX }];
+      sunNodes.push({
+        name: "Sun", rotation: lookRotation(toSun.map((x) => -x), up),
+        translation: toSun.map((x) => x * D * 0.5 * scale),
+        extensions: { KHR_lights_punctual: { light: 0 } },
+        extras: sun.extras,
+      });
+    }
+  }
+  const nodeCount = back ? 3 : 2;
+
   const gltf = {
     asset: {
       version: "2.0", generator: "DL-SplatGenerator (Digital Landscapes)",
-      extras: { note: note || undefined, scale_m_per_unit: scale, hfov_deg: hfov },
+      extras: { note: note || undefined, scale_m_per_unit: scale, hfov_deg: hfov,
+                sun: sun?.extras },
     },
-    extensionsUsed: ["KHR_materials_unlit"],
+    extensionsUsed: ["KHR_materials_unlit", ...(lights ? ["KHR_lights_punctual"] : [])],
+    ...(lights ? { extensions: { KHR_lights_punctual: { lights } } } : {}),
     scene: 0,
-    scenes: [{ name: "Photo scene", nodes: back ? [0, 1, 2] : [0, 1] }],
+    scenes: [{ name: "Photo scene",
+               nodes: [...Array(nodeCount + sunNodes.length).keys()] }],
     nodes: [
       { name: "Photo camera", camera: 0,
         extras: { resolution_x: photo.width || w, resolution_y: photo.height || h, hfov_deg: hfov } },
       { name: "Photo surface", mesh: 0 },
       ...(back ? [{ name: "Photo backdrop", mesh: 1 }] : []),
+      ...sunNodes,
     ],
     cameras: [{
       name: "Photo camera", type: "perspective",
@@ -235,8 +268,47 @@ export function photoSceneGlb({ splats, record, photo, scale = 1, note = "", fil
     blob,
     stats: { grid: [cols, rows], worked: [w, h], placed, collided, outside, filledIn,
              holes: rows * cols - placed - filledIn, backdrop: !!back,
-             vertices: pos.length / 3, triangles: idx.length / 3, bytes: blob.size },
+             vertices: pos.length / 3, triangles: idx.length / 3, bytes: blob.size,
+             sun: !!lights, north: sunNodes.length > 0 },
   };
+}
+
+/* Blender's glTF importer turns a directional light's lux into its Sun
+ * strength in W/m² by dividing by 683 (its "Standard" lighting mode); 3 W/m²
+ * is a plain sunny-day Sun in Blender. Checked by importing into Blender 5.2. */
+const SUN_LUX = 3 * 683;
+
+/**
+ * The node rotation (quaternion x, y, z, w) whose local -Z points along
+ * `forward` and whose local +Y leans towards `up` -- how glTF aims a camera or
+ * a light, and so how an empty's axes are set.
+ */
+function lookRotation(forward, up) {
+  const n = (v) => { const l = Math.hypot(...v); return v.map((x) => x / l); };
+  const crossP = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const z = n(forward.map((x) => -x));
+  let u = up;
+  if (Math.abs(u[0] * z[0] + u[1] * z[1] + u[2] * z[2]) > 0.999) u = Math.abs(z[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const x = n(crossP(u, z));
+  const y = crossP(z, x);
+  // rotation matrix with columns x, y, z -> quaternion
+  const [m00, m10, m20] = x, [m01, m11, m21] = y, [m02, m12, m22] = z;
+  const tr = m00 + m11 + m22;
+  let qx, qy, qz, qw;
+  if (tr > 0) {
+    const s = Math.sqrt(tr + 1) * 2;
+    qw = s / 4; qx = (m21 - m12) / s; qy = (m02 - m20) / s; qz = (m10 - m01) / s;
+  } else if (m00 > m11 && m00 > m22) {
+    const s = Math.sqrt(1 + m00 - m11 - m22) * 2;
+    qw = (m21 - m12) / s; qx = s / 4; qy = (m01 + m10) / s; qz = (m02 + m20) / s;
+  } else if (m11 > m22) {
+    const s = Math.sqrt(1 + m11 - m00 - m22) * 2;
+    qw = (m02 - m20) / s; qx = (m01 + m10) / s; qy = s / 4; qz = (m12 + m21) / s;
+  } else {
+    const s = Math.sqrt(1 + m22 - m00 - m11) * 2;
+    qw = (m10 - m01) / s; qx = (m02 + m20) / s; qy = (m12 + m21) / s; qz = s / 4;
+  }
+  return [qx, qy, qz, qw];
 }
 
 /**

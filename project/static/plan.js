@@ -11,10 +11,12 @@
  *   the view   where the viewer's camera is, and a wedge for its field of view
  *
  * WHICH WAY IS UP. "Above" is the scene's own vertical -- the capture cameras'
- * mean up, as levelling uses -- and the plan is turned so the walk heads up the
- * page. It is NOT north-up: a solve has no compass, and a phone's single GPS
- * fix places a capture but cannot turn it. Clicking the plan jumps to the
- * nearest capture position.
+ * mean up, as levelling uses. A solve has no compass, and a phone's single GPS
+ * fix places a capture but cannot turn it, so by default the plan is turned so
+ * the walk heads up the page, and says it is not north-up. Once north has been
+ * SET (Display -> Sun and north: a photo's compass, a shadow, or by hand) the
+ * plan is north-up, with an N and the sun's direction at the moment of
+ * capture. Clicking the plan jumps to the nearest capture position.
  *
  * Built once per scene (one pass over the splats), drawn each frame only when
  * the camera or the capture position has changed.
@@ -40,12 +42,24 @@ export class PlanView {
     this.path = null;          // plan coords of the capture cameras
     this.scale = null;         // { f, estimated } metres per unit, when calibrated
     this.onPick = null;        // (captureIndex) => void
+    this.north = null;         // world-space north, once set -> the plan is north-up
+    this.toSun = null;         // world-space direction to the sun, when it is up
     this._sig = "";
     this.canvas.addEventListener("click", (e) => this._click(e));
   }
 
   /** Metres per scene unit (or null), for the scale bar. */
   setScale(f, estimated = false) { this.scale = f ? { f, estimated } : null; this._sig = ""; }
+
+  /**
+   * North and the sun, world-space unit vectors or null. A new north turns the
+   * page, so it needs a build(); the sun only a redraw.
+   */
+  setSun(north, toSun) {
+    this.north = north ? new THREE.Vector3().fromArray(north) : null;
+    this.toSun = toSun ? new THREE.Vector3().fromArray(toSun) : null;
+    this._sig = "";
+  }
 
   /* ------------------------------------------------------------ building */
 
@@ -62,7 +76,9 @@ export class PlanView {
     const up = (v._up ? v._up.clone() : new THREE.Vector3(0, 1, 0)).normalize();
     const cams = v.captureCameras;
     let fwd = new THREE.Vector3();
-    if (cams && cams.length > 1) {
+    if (this.north) {
+      fwd.copy(this.north);                            // north-up, once north is known
+    } else if (cams && cams.length > 1) {
       fwd.fromArray(cams[cams.length - 1].position).sub(new THREE.Vector3().fromArray(cams[0].position));
       if (fwd.lengthSq() < 1e-12) fwd.fromArray(cams[0].direction);
     } else {
@@ -119,6 +135,8 @@ export class PlanView {
       p.set(0, 0, 0).applyMatrix4(M);                   // the photo's camera
       const cu = p.dot(e1), cv = p.dot(e2);
       this.photoAt = [cu, cv];
+      const look = new THREE.Vector3(0, 0, 1).transformDirection(M);
+      this.photoLook = Math.atan2(-look.dot(e2), look.dot(e1));   // page angle it looks along
       u0 = Math.min(u0, cu); u1 = Math.max(u1, cu); v0 = Math.min(v0, cv); v1 = Math.max(v1, cv);
     }
     const span = Math.max(u1 - u0, v1 - v0) * 1.08 || 1;
@@ -153,8 +171,8 @@ export class PlanView {
     this.raster.width = this.raster.height = GRID;
     this.raster.getContext("2d").putImageData(img, 0, 0);
     this.path = path.length ? path : null;
-    this.note.textContent = cams
-      ? "From above · walk heads up the page · not north-up"
+    this.note.textContent = this.north ? "From above · north-up"
+      : cams ? "From above · walk heads up the page · not north-up"
       : "From above · the photo looks up the page · not north-up";
   }
 
@@ -170,7 +188,7 @@ export class PlanView {
     if (this.root.hidden || !this.frame) return;
     const cam = v.camera.position, dir = v.camera.getWorldDirection(new THREE.Vector3());
     const sig = [cam.x, cam.y, cam.z, dir.x, dir.z, v.camera.fov, v.captureIndex,
-                 this.scale?.f].map((x) => (x ?? 0).toFixed?.(3) ?? x).join();
+                 this.scale?.f, this.toSun?.x, this.toSun?.z].map((x) => (x ?? 0).toFixed?.(3) ?? x).join();
     if (sig === this._sig) return;
     this._sig = sig;
 
@@ -182,15 +200,15 @@ export class PlanView {
     ctx.imageSmoothingEnabled = true;            // a soft plan, not a pixel grid
     if (this.raster) ctx.drawImage(this.raster, 0, 0, SIZE, SIZE);
 
-    // a photo scene: where the photo was taken, and what it saw -- it looks
-    // straight up the page, with the photo's own field of view
+    // a photo scene: where the photo was taken, and what it saw, with the
+    // photo's own field of view -- up the page, or its bearing when north-up
     if (this.photoAt && v.photoCamera) {
       const [x, y] = this._toPage(...this.photoAt);
-      const half = v.photoCamera.hfov * Math.PI / 360, len = 34;
+      const half = v.photoCamera.hfov * Math.PI / 360, len = 34, a = this.photoLook ?? -Math.PI / 2;
       ctx.strokeStyle = ink; ctx.fillStyle = "rgba(253,252,249,.18)"; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.moveTo(x, y);
-      ctx.lineTo(x + len * Math.sin(-half), y - len * Math.cos(half));
-      ctx.lineTo(x + len * Math.sin(half), y - len * Math.cos(half));
+      ctx.lineTo(x + len * Math.cos(a - half), y + len * Math.sin(a - half));
+      ctx.lineTo(x + len * Math.cos(a + half), y + len * Math.sin(a + half));
       ctx.closePath(); ctx.fill(); ctx.stroke();
       ctx.fillStyle = ink; ctx.beginPath(); ctx.arc(x, y, 3, 0, 2 * Math.PI); ctx.fill();
     }
@@ -238,6 +256,30 @@ export class PlanView {
       ctx.fillStyle = ink; ctx.fillRect(8, SIZE - 12, px, 2);
       ctx.font = "10px sans-serif";
       ctx.fillText(`${this.scale.estimated ? "≈ " : ""}${m} m`, 8, SIZE - 16);
+    }
+
+    // north-up: an N at the top right; the sun as a disc on the rim, in the
+    // direction it stood, with a ray towards the middle (shadows fall the
+    // other way)
+    if (this.north) {
+      ctx.fillStyle = ink; ctx.strokeStyle = ink; ctx.lineWidth = 1.5;
+      ctx.shadowColor = "rgba(0,0,0,.6)"; ctx.shadowBlur = 2;
+      ctx.beginPath(); ctx.moveTo(SIZE - 12, 8); ctx.lineTo(SIZE - 16, 18); ctx.lineTo(SIZE - 8, 18);
+      ctx.closePath(); ctx.fill();
+      ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("N", SIZE - 12, 30);
+      ctx.textAlign = "start";
+      if (this.toSun) {
+        const du = this.toSun.dot(f.e1), dv = this.toSun.dot(f.e2);
+        const a = Math.atan2(-dv, du), c = SIZE / 2, rim = SIZE / 2 - 9;
+        const sx = c + rim * Math.cos(a), sy = c + rim * Math.sin(a);
+        ctx.strokeStyle = "rgba(217,195,154,.9)"; ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(c, c); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#d9c39a";
+        ctx.beginPath(); ctx.arc(sx, sy, 5, 0, 2 * Math.PI); ctx.fill();
+      }
+      ctx.shadowBlur = 0;
     }
   }
 

@@ -125,6 +125,15 @@ Umeyama alignment
     between two point patterns". IEEE Transactions on Pattern Analysis and
     Machine Intelligence 13(4):376-380. doi:10.1109/34.88573
 
+The sun's position
+    project/static/sun.js implements the equations of NOAA's Solar Calculator
+    (NOAA Global Monitoring Laboratory, a US Government work), which follow
+    Meeus, J. (1998) "Astronomical Algorithms", 2nd ed. Willmann-Bell. It is
+    checked in project/tools/sun_test.mjs against the reference case of
+    Reda, I. and Andreas, A. (2004) "Solar position algorithm for solar
+    radiation applications". Solar Energy 76(5):577-589.
+    doi:10.1016/j.solener.2003.12.003
+
 The interface grammar and the house theme
     From the sibling tools DL-TerrainDiversity and DL-TerrainMapper (Apache-2.0):
     the floating window, the two-level folds and the design tokens. This tool
