@@ -915,9 +915,18 @@ def main() -> int:
         spz = compress_to_spz(final, dry=args.dry_run)
         served = spz or final
 
+        # what the source says about itself: when, where, with what
+        # (tools/source_meta.py). Kept locally; make_sample.py drops the location.
+        try:
+            import source_meta
+            meta = source_meta.read(source)
+        except Exception as exc:                      # noqa: BLE001
+            meta = {"error": str(exc)}
+
         manifest = {
             "name": name,
             "source": str(source),
+            "source_meta": meta,
             "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
             # the source video's own frame rate, so the viewer can walk the
             # capture at the speed it was filmed and the Blender exporter need

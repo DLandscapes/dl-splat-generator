@@ -10,6 +10,8 @@ project\\data\\samples\\<id>\\ (or --root) and is listed in samples.json there:
     cameras.json    video scenes: the camera path, so the sample opens at camera 1
     thumb.jpg       480 x 360: the photograph itself, or the video's first solved
                     frame -- privacy-masked like every frame the solve saw
+    photo.jpg       photo scenes: the photograph at the size its depth was worked
+                    at, for the viewer's glTF export (texture and depth grid)
     samples.json    one entry per sample: what it is, where and when, and the part
                     of capture.json the viewer needs (field of view, image size,
                     scale), WITHOUT the absolute paths capture.json carries
@@ -48,7 +50,7 @@ PHOTO_METHOD = "single-image metric depth"
 
 # the parts of capture.json the viewer reads, and nothing that names a disk
 RECORD_KEYS = ("method", "metric", "scale_m_per_unit", "scale_note", "fps", "image")
-SETTING_KEYS = ("fov", "stride")
+SETTING_KEYS = ("fov", "stride", "max_side")
 
 
 # ------------------------------------------------------------------ PLY in/out
@@ -99,13 +101,28 @@ def thin(data: np.ndarray, keep: int) -> np.ndarray:
 # ------------------------------------------------------------------ the sample
 
 def thumbnail(src: Path, dst: Path) -> None:
-    from PIL import Image
-    img = Image.open(src).convert("RGB")
+    from PIL import Image, ImageOps
+    img = ImageOps.exif_transpose(Image.open(src)).convert("RGB")   # upright, as depth_splat.py sees it
     k = max(THUMB[0] / img.width, THUMB[1] / img.height)
     img = img.resize((max(THUMB[0], round(img.width * k)),
                       max(THUMB[1], round(img.height * k))), Image.LANCZOS)
     left, top = (img.width - THUMB[0]) // 2, (img.height - THUMB[1]) // 2
     img.crop((left, top, left + THUMB[0], top + THUMB[1])).save(dst, quality=85)
+
+
+def photo_at_worked_size(src: Path, rec: dict, dst: Path) -> dict:
+    """The photograph at the size its depth was worked at -- depth_splat.py's
+    own rule, longest side capped at max_side -- so the splats sit exactly on
+    its pixel grid. It is the texture of the viewer's glTF export."""
+    from PIL import Image, ImageOps
+    img = ImageOps.exif_transpose(Image.open(src)).convert("RGB")   # upright, as depth_splat.py sees it
+    original = img.size
+    max_side = int((rec.get("settings") or {}).get("max_side") or 1600)
+    if max(img.size) > max_side:
+        k = max_side / max(img.size)
+        img = img.resize((round(img.width * k), round(img.height * k)), Image.LANCZOS)
+    img.save(dst, quality=90)
+    return {"width": original[0], "height": original[1], "worked": [img.width, img.height]}
 
 
 def first_frame(name: str, cameras: dict) -> Path:
@@ -130,6 +147,8 @@ def main() -> int:
     ap.add_argument("--max-splats", type=int, default=0,
                     help="thin to this many splats first -- a last resort that "
                          "costs visible quality (default: keep every splat)")
+    ap.add_argument("--keep-location", action="store_true",
+                    help="keep the source's GPS position in the sample (default: drop it)")
     ap.add_argument("--root", default=str(DEFAULT_ROOT),
                     help="where samples live (default project\\data\\samples)")
     args = ap.parse_args()
@@ -167,23 +186,29 @@ def main() -> int:
         thumbnail(first_frame(args.scene, cameras), out / "thumb.jpg")
     else:
         thumbnail(Path(rec["source"]), out / "thumb.jpg")
+        worked = photo_at_worked_size(Path(rec["source"]), rec, out / "photo.jpg")
 
     # 3. the record the viewer needs -- no paths
     record = {k: rec[k] for k in RECORD_KEYS if k in rec}
     settings = {k: v for k, v in (rec.get("settings") or {}).items() if k in SETTING_KEYS}
     if settings:
         record["settings"] = settings
-    if kind == "photo" and "image" not in record:
-        # records before 2026-09-24: the aspect, read back as the viewer would
-        pos = np.stack([data["x"], data["y"], data["z"]], axis=1)
-        pos = pos[pos[:, 2] > 1e-6]
-        aspect = float(np.abs(pos[:, 0] / pos[:, 2]).max() / np.abs(pos[:, 1] / pos[:, 2]).max())
-        record["image"] = {"aspect": round(aspect, 5)}
+    # what the source says about itself -- WITHOUT its GPS position unless asked:
+    # a sample is published, and a location with a time and a device is personal
+    # data (the person holding the camera was there, then)
+    import source_meta
+    meta = rec.get("source_meta") or source_meta.read(Path(rec["source"]))
+    record["source_meta"] = meta if args.keep_location else source_meta.without_location(meta)
+    if kind == "photo":
+        # the photo's own size and the grid the depth was worked on: the viewer's
+        # photo view and its glTF export both rebuild the camera from these
+        record["image"] = {**(record.get("image") or {}), **worked}
 
     entry = {
         "id": sid, "kind": kind, "title": args.title, "place": args.place,
         "date": args.date, "note": args.note,
         "scene": f"{sid}/scene.spz", "thumb": f"{sid}/thumb.jpg",
+        **({"photo": f"{sid}/photo.jpg"} if kind == "photo" else {}),
         "splats": int(len(kept)), "splatsOriginal": int(len(data)),
         "frames": len(cameras["cameras"]) if cameras else None,
         "record": record,

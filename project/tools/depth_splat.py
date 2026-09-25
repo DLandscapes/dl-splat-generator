@@ -12,11 +12,16 @@ WHAT THIS IS NOT
     with stretching and holes where surfaces were hidden. Use it for site
     impressions, historical photographs and context -- not as a survey.
 
-WHY METRIC MATTERS
-    Most depth models return *relative* depth: arbitrary scale and offset, so
-    measuring is meaningless. Depth Anything V2's metric fine-tunes return
-    metres, so a scene opens already scaled and works with the viewer's
-    measurement tools. The outdoor fine-tune is the default here.
+WHY METRIC, AND WHY ONLY AN ESTIMATE
+    Most depth models return *relative* depth: arbitrary scale and offset.
+    Depth Anything V2's metric fine-tunes return metres, which keeps the scene
+    in plausible proportion -- but the metres are an ESTIMATE. On a capture
+    calibrated from a measured dimension, this model put every frame 5-12x too
+    deep (output\\research\\DEPTH SMALL VS BASE - RESULTS - 002.md). So the
+    viewer does NOT apply the scale for you (it did until 2026-09-24); it offers
+    "Use the depth estimate" and marks every figure "est." if you do.
+    `"metric": true` in capture.json records where the numbers came from, not
+    that they are right. The outdoor fine-tune is the default here.
 
 WHAT MAKES IT LOOK SHARP
     The obvious implementation looks like soup. Three things fix it:
@@ -50,6 +55,10 @@ MODELS = {
 }
 SH_C0 = 0.28209479177387814
 
+# The horizontal field of view assumed when a photo's file does not record its
+# lens as a 35 mm-equivalent focal length. Phone main cameras sit at 65-70°.
+ASSUMED_FOV = 65.0
+
 
 def log(msg: str) -> None:
     print(msg, flush=True)
@@ -62,7 +71,12 @@ def estimate_depth(image_path: Path, model_id: str, max_side: int):
     from PIL import Image
     from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
-    img = Image.open(image_path).convert("RGB")
+    # Upright first. A phone stores a portrait photo as landscape pixels with an
+    # EXIF "rotate 90°" flag; PIL does not apply it, so the depth was estimated
+    # on a sideways picture while its lens was read upright. exif_transpose
+    # turns the pixels the way the file says and drops the flag.
+    from PIL import ImageOps
+    img = ImageOps.exif_transpose(Image.open(image_path)).convert("RGB")
     original = img.size
     if max(img.size) > max_side:
         scale = max_side / max(img.size)
@@ -92,9 +106,10 @@ def build_splats(depth, rgb, *, fov_deg: float, stride: int, edge_drop: float):
     import numpy as np
 
     h, w = depth.shape
-    # Focal length in pixels from an assumed horizontal field of view. Phone
-    # cameras sit around 60-70 degrees; this only sets the overall shape of the
-    # cone, and the metric depth carries the scale.
+    # Focal length in pixels from the horizontal field of view -- the photo's
+    # own lens when its file says, else an assumption (see main()). The depth
+    # carries the distance; the field of view decides how wide everything at
+    # that distance is, so a wrong one stretches or squeezes the whole scene.
     fx = fy = (w / 2) / math.tan(math.radians(fov_deg) / 2)
     cx, cy = w / 2, h / 2
 
@@ -209,8 +224,10 @@ def main() -> int:
                     help="sample every Nth pixel (default 2)")
     ap.add_argument("--max-side", type=int, default=1600,
                     help="downscale the image if larger (default 1600)")
-    ap.add_argument("--fov", type=float, default=65.0,
-                    help="assumed horizontal field of view in degrees")
+    ap.add_argument("--fov", type=float, default=None,
+                    help="horizontal field of view in degrees (default: the "
+                         "photo's own lens when its file records a 35 mm-"
+                         f"equivalent focal length, else {ASSUMED_FOV:g})")
     ap.add_argument("--edge-drop", type=float, default=0.03,
                     help="drop splats where depth changes by more than this "
                          "fraction between neighbours (default 0.03)")
@@ -230,7 +247,28 @@ def main() -> int:
 
     log(f"Single-image depth -> splats")
     log(f"  image  {image}")
-    log(f"  output {out_dir}\n")
+    log(f"  output {out_dir}")
+
+    # What the photo says about itself -- and above all its LENS. The scene is
+    # unprojected with a field of view; until 2026-09-25 every photo got 65°,
+    # and the uploaded Everest photo (85 mm on an APS-C Canon, about 15°
+    # across) came out several times too wide. Order: a --fov you give, else
+    # the photo's own 35 mm-equivalent focal length, else the assumption.
+    try:
+        import source_meta
+        meta = source_meta.read(image)
+    except Exception as exc:                     # noqa: BLE001
+        meta = {"error": str(exc)}
+    lens_fov = (meta.get("camera") or {}).get("hfov_deg")
+    if args.fov:
+        fov, fov_source = args.fov, "given on the command line"
+    elif lens_fov:
+        fov = float(lens_fov)
+        fov_source = (f"the photo's lens: {meta['camera']['focal_35mm']:g} mm "
+                      f"35 mm-equivalent")
+    else:
+        fov, fov_source = ASSUMED_FOV, "assumed: the file records no 35 mm-equivalent focal length"
+    log(f"  field of view {fov:g}° across -- {fov_source}\n")
 
     began = time.time()
     log("[1/3] depth")
@@ -244,7 +282,7 @@ def main() -> int:
         f"(median {float(__import__('numpy').median(finite)):.2f} m)")
 
     log("[2/3] splats")
-    splats, dropped = build_splats(depth, rgb, fov_deg=args.fov,
+    splats, dropped = build_splats(depth, rgb, fov_deg=fov,
                                    stride=args.stride, edge_drop=args.edge_drop)
     log(f"    {len(splats):,} splats, {dropped:,} dropped at depth edges")
 
@@ -276,6 +314,7 @@ def main() -> int:
     (out_dir / "capture.json").write_text(json.dumps({
         "name": name,
         "source": str(image),
+        "source_meta": meta,
         "method": "single-image metric depth",
         "model": MODELS[args.scene],
         "created": created,
@@ -285,7 +324,7 @@ def main() -> int:
         # photo view frames the scene at exactly this rectangle.
         "image": {"width": original[0], "height": original[1],
                   "worked": [int(depth.shape[1]), int(depth.shape[0])]},
-        "settings": {"stride": args.stride, "fov": args.fov,
+        "settings": {"stride": args.stride, "fov": fov, "fov_source": fov_source,
                      "edge_drop": args.edge_drop, "flatten": args.flatten,
                      "max_side": args.max_side},
         "caveat": "2.5D: no data behind surfaces; accurate only near the "
@@ -293,7 +332,8 @@ def main() -> int:
     }, indent=2))
 
     log(f"\nDone in {time.time() - began:.0f}s. "
-        f"Depth is metric, so use \"Scene is already in metres\".")
+        f"The depth is in estimated metres - calibrate from a known distance "
+        f"to measure, or use the estimate, labelled as one.")
     return 0
 
 

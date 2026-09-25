@@ -286,6 +286,10 @@ select {
   box-shadow: 0 1px 4px rgba(0,0,0,.25);
 }
 .label.note { transform: translate(-50%, -160%); pointer-events: auto; max-width: 220px; white-space: normal; }
+/* a note is a handle: drag its pin or label to move it, double-click to edit */
+.marker.note-pin { pointer-events: auto; width: 11px; height: 11px; }
+.marker.note-pin, .label.note { cursor: grab; touch-action: none; user-select: none; }
+.marker.note-pin.dragging, .label.note.dragging { cursor: grabbing; }
 .label.note b { display: block; font-family: var(--font-head); }
 #overlay svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 #overlay svg polyline, #overlay svg polygon { fill: rgba(217,195,154,.25); stroke: #fdfcf9; stroke-width: 1.5; }
@@ -465,6 +469,33 @@ select {
 #brandmark:hover img { opacity: 1; }
 #brandmark img { width: 1.15em; height: 1.15em; opacity: .6; }
 
+/* The plan, under the navigation column (its top is set from the column's
+   height each frame, which grows when the frame slider shows). */
+#plan {
+  position: absolute; right: 10px; top: 320px; z-index: 4; width: 200px;
+  padding: 5px 6px 6px; border-radius: 5px;
+  background: var(--glass-soft); border: 1px solid var(--line);
+}
+#plan canvas { display: block; cursor: pointer; border-radius: 3px; background: rgba(0,0,0,.18); }
+.plan-head {
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;
+  font-family: var(--font-head); font-size: .66rem; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--ink-soft);
+}
+.plan-note { margin-top: 4px; font-size: .66rem; line-height: 1.3; color: var(--ink-soft); }
+
+/* The density switch (DL-TerrainMapper's rule): EXPLANATIONS GO, WARNINGS AND
+   STATE STAY. Only .why is hidden; a .meta without it is a warning or live
+   output, and hiding it would lose what the panel exists to say. */
+body.terse .why { display: none; }
+#explainToggle { font-family: var(--font-head); }
+#gizmo #explainToggle[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--sheet); }
+
+/* The source's facts: a two-column list, labels in the soft ink. */
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0 0 6px; font-size: .78rem; }
+.facts dt { color: var(--ink-soft); }
+.facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+
 /* Samples on the Import panel, in digital-landscapes.com's own grammar: image
    frames with a 12 px fillet, filled edge to edge; grayscale until reached for;
    the asymmetric 17-6-17-6 chip; a caption under every image. */
@@ -497,7 +528,6 @@ select {
 }
 .sample-cap b { display: block; font-size: .84rem; font-weight: 600; line-height: 1.2; color: var(--ink); }
 .sample-cap span { display: block; margin-top: 2px; font-size: .72rem; line-height: 1.35; color: var(--ink-soft); }
-#panel-tests { margin-top: 10px; }
 
 #sample-card {
   position: absolute; right: 16px; bottom: 40px; z-index: 2; max-width: 320px;

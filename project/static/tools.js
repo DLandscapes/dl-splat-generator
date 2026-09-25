@@ -29,6 +29,7 @@ export class Tools {
 
     this.scaleFactor = 1;      // raw scene units -> metres
     this.calibrated = false;
+    this.estimated = false;    // the scale is a model's estimate, not a measurement
     this.measurements = [];
     this.notes = [];
     this.viewpoints = [];
@@ -98,6 +99,7 @@ export class Tools {
       if (Number.isFinite(metres) && metres > 0 && raw > 0) {
         this.scaleFactor = metres / raw;
         this.calibrated = true;
+        this.estimated = false;          // measured by hand: no longer an estimate
       }
       return this.cancel();
     }
@@ -134,6 +136,63 @@ export class Tools {
     for (const m of this.measurements) m.value = this._value(m.kind, m.points);
   }
 
+  /** Change a note's title and text: the same two questions as when placing it,
+   *  answered in advance with what is there. Cancelling either keeps it as it was. */
+  editNote(id) {
+    const n = this.notes.find((x) => x.id === id);
+    if (!n) return;
+    const title = prompt("Annotation title:", n.title);
+    if (title === null || !title.trim()) return;
+    const text = prompt("Annotation text (optional):", n.text || "");
+    if (text === null) return;
+    n.title = title.trim();
+    n.text = text;
+    this.onChange?.();
+  }
+
+  /**
+   * Move a note by dragging its pin or its label; double-click either to edit.
+   * The pin follows the surface under the cursor (a pick through the renderer,
+   * the same as placing it). Grabbing the label keeps the offset between cursor
+   * and pin, so the note does not jump when you take hold of it. The pointer is
+   * captured, so the orbit underneath never sees the drag.
+   */
+  _makeNoteHandle(el, id) {
+    el.title = "Drag to move · double-click to edit";
+    el.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      const n = this.notes.find((x) => x.id === id);
+      if (!n) return;
+      e.preventDefault();
+      e.stopPropagation();
+      el.setPointerCapture(e.pointerId);
+      const s = this.viewer.project(n.point);
+      const r = this.viewer.canvas.getBoundingClientRect();
+      this._drag = { id, el, moved: false, x0: e.clientX, y0: e.clientY,
+                     dx: e.clientX - (r.left + s.x), dy: e.clientY - (r.top + s.y) };
+      el.classList.add("dragging");
+    });
+    el.addEventListener("pointermove", (e) => {
+      const d = this._drag;
+      if (!d || d.id !== id) return;
+      if (!d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return;
+      d.moved = true;
+      const hit = this.viewer.pick(e.clientX - d.dx, e.clientY - d.dy);
+      const n = this.notes.find((x) => x.id === id);
+      if (hit && n) n.point.copy(hit);     // off the scene: the pin waits where it was
+    });
+    const end = () => {
+      const d = this._drag;
+      if (!d || d.id !== id) return;
+      d.el.classList.remove("dragging");
+      this._drag = null;
+      if (d.moved) this.onChange?.();
+    };
+    el.addEventListener("pointerup", end);
+    el.addEventListener("pointercancel", end);
+    el.addEventListener("dblclick", (e) => { e.stopPropagation(); this.editNote(id); });
+  }
+
   remove(id) {
     this.measurements = this.measurements.filter((m) => m.id !== id);
     this.notes = this.notes.filter((n) => n.id !== id);
@@ -148,10 +207,19 @@ export class Tools {
    * structure-from-motion solves the geometry only up to an unknown factor. So
    * until the scene is calibrated the numbers are honest but unitless, and are
    * labelled "units" rather than pretending to be metres.
+   *
+   * An ESTIMATED scale -- a single photograph's depth model -- reads "≈ … m est."
+   * everywhere a number appears, stills included, and with fewer digits: on a
+   * calibrated capture both depth models were measured 5-12x too deep
+   * (output\research\DEPTH SMALL VS BASE - RESULTS - 002.md), so millimetres
+   * would be false precision.
    */
   format(m) {
     const unit = this.calibrated ? "m" : "units";
     const v = m.value * (m.kind === "area" ? this.scaleFactor ** 2 : this.scaleFactor);
+    if (this.calibrated && this.estimated) {
+      return m.kind === "area" ? `≈ ${v.toPrecision(2)} m² est.` : `≈ ${v.toPrecision(2)} m est.`;
+    }
     if (m.kind === "area") return `${v.toFixed(2)} ${unit}²`;
     return `${v.toFixed(v < 10 ? 3 : 2)} ${unit}`;
   }
@@ -167,16 +235,18 @@ export class Tools {
   }
 
   /**
-   * Metres per scene unit, from outside the viewer: a photo scene whose depth
-   * was metric to begin with, or a capture whose `capture.json` records a
-   * calibration someone measured on site. Same effect as calibrating by hand,
-   * without asking the user to do it twice.
+   * Metres per scene unit, from outside the viewer: a capture whose
+   * `capture.json` records a calibration someone measured on site (same effect
+   * as calibrating by hand, without asking twice), or -- with `estimated` -- a
+   * photo scene's depth-model scale, which the user has to ask for and which is
+   * then labelled as an estimate wherever it shows.
    */
-  setScale(metresPerUnit) {
+  setScale(metresPerUnit, { estimated = false } = {}) {
     const f = Number(metresPerUnit);
     if (!Number.isFinite(f) || f <= 0) return false;
     this.scaleFactor = f;
     this.calibrated = true;
+    this.estimated = !!estimated;
     this.onChange?.();
     return true;
   }
@@ -201,7 +271,7 @@ export class Tools {
 
   render() {
     const live = new Set();
-    const put = (key, cls, build) => {
+    const put = (key, cls, build, init) => {
       live.add(key);
       let el = this._nodes.get(key);
       if (!el) {
@@ -209,6 +279,7 @@ export class Tools {
         el.className = cls;
         this.overlay.appendChild(el);
         this._nodes.set(key, el);
+        init?.(el);                        // once, when the element is made
       }
       build(el);
       return el;
@@ -237,14 +308,19 @@ export class Tools {
     }
 
     for (const n of this.notes) {
-      place(put(`${n.id}:p`, "marker", () => {}), n.point);
+      const handle = (el) => this._makeNoteHandle(el, n.id);
+      place(put(`${n.id}:p`, "marker note-pin", () => {}, handle), n.point);
       place(put(`${n.id}:label`, "label note", (el) => {
+        // rebuilt only when the text changes, so a drag is not interrupted
+        const sig = `${n.title}\u0000${n.text || ""}`;
+        if (el.dataset.sig === sig) return;
+        el.dataset.sig = sig;
         el.innerHTML = "";
         const b = document.createElement("b");
         b.textContent = n.title;
         el.appendChild(b);
         if (n.text) el.appendChild(document.createTextNode(n.text));
-      }), n.point);
+      }, handle), n.point);
     }
 
     if (this._pending.length) {
@@ -279,7 +355,8 @@ export class Tools {
 
   toJSON() {
     return {
-      scale: { factor: this.scaleFactor, calibrated: this.calibrated },
+      scale: { factor: this.scaleFactor, calibrated: this.calibrated,
+               estimated: this.estimated },
       measurements: this.measurements.map((m) => ({
         id: m.id, kind: m.kind, points: m.points.map((p) => p.toArray()),
       })),
@@ -294,6 +371,7 @@ export class Tools {
     if (!data) return;
     this.scaleFactor = data.scale?.factor ?? 1;
     this.calibrated = !!data.scale?.calibrated;
+    this.estimated = !!data.scale?.estimated;
     this.measurements = (data.measurements || []).map((m) => {
       const points = m.points.map((a) => new THREE.Vector3().fromArray(a));
       return { id: m.id || uid(), kind: m.kind, points, value: this._value(m.kind, points) };

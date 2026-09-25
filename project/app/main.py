@@ -321,6 +321,26 @@ def dem_build(name: str, scale: float = 0.0, cell: float = 0.0, fill: int = 4,
     return {"ok": True, "lines": lines, **dem_status(name)}
 
 
+@app.get("/api/source/{name}")
+def source_info(name: str):
+    """What the scene's source photo or video says about itself -- when, where,
+    with what (tools/source_meta.py). Read from the file on demand, so scenes
+    made before this existed get it too. Local only: nothing is sent anywhere."""
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name)[:120]
+    record = OUTPUT / safe / "capture.json"
+    if not record.is_file():
+        raise HTTPException(404, f"no capture record for {safe}")
+    try:
+        rec = json.loads(record.read_text(encoding="utf-8"))
+    except ValueError:
+        raise HTTPException(500, "the capture record is not readable")
+    if not rec.get("source"):
+        raise HTTPException(404, "the record names no source file")
+    sys.path.insert(0, str(PROJECT / "tools"))
+    import source_meta
+    return source_meta.read(Path(rec["source"]))
+
+
 @app.get("/api/export/blender/{name}")
 def blender_status(name: str):
     """Can this scene be handed to the Blender add-on, and if not, why not."""

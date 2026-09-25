@@ -22,9 +22,7 @@ the terrain models this tool writes into laser sheets,
 — from a phone scanning app, from Postshot, or from this tool's own generator.
 A plain point-cloud `.ply` opens too. You can try everything without your own
 data: the **Samples** on the Import panel are real scenes made with this tool —
-one from a walked video, one from a single photograph — and **Test scenes**
-holds a synthetic contour landform and a measuring test with markers at known
-distances.
+one from a walked video, one from a single photograph.
 
 ### On your own machine
 
@@ -69,14 +67,28 @@ in metres. The scale travels with the scene file and shows in every still.
 **Section.** A box that keeps only what is inside it. Pull one face in for a
 plane cut, two for a slab.
 
-**Annotate and keep views.** Pin notes to the scene; save viewpoints to return
-to.
+**Annotate and keep views.** Pin notes to the scene — drag a pin or its label
+to move it along the surface, double-click to change its text — and save
+viewpoints to return to.
 
 **Walk the capture.** A scene made by the generator knows the path the camera
 took. The viewer can fly that path, stand at any position along it, and level
 the horizon from the cameras' own sense of up. A splat scene is only faithful
-near where it was filmed from, so this is the honest way to look at one. A
-scene made from one photograph has a **Photo** button instead: it stands where
+near where it was filmed from, so this is the honest way to look at one. In the
+**Camera** view the frame the camera actually filmed is outlined and the rest
+dimmed: a phone films portrait, so in a wide window most of the view from a
+capture position was never filmed from there, and that is where a scene guesses.
+**Colour by viewing angle** (Display) can be switched off to check whether a
+stray tint comes from such a guess. A **plan** under the navigation shows the
+scene from above — what the scan covers up to eye level, the camera path, and
+where you stand; click near the path to stand there. It is turned so the walk
+heads up the page, not north-up: a solve has no compass.
+
+**Source.** A scene made from a photo or video lists what its file says about
+itself — when it was taken, where (the phone's GPS), with which device and
+lens, and who to credit. It is read on your machine and sent nowhere; a sample
+leaves the location out. A scene made from one photograph has a
+**Photo** button instead: it stands where
 the photo was taken, with the photo's field of view, and outlines the photo's
 own rectangle — and a still saved there is exactly that rectangle.
 
@@ -86,6 +98,12 @@ section box's outline. **One per viewpoint** saves a still of every saved
 viewpoint as one ZIP, which is the quick way to show several states of a scene.
 On a laptop whose graphics chip cannot hold the size asked for, the still comes
 out as large as the chip allows, and says so.
+
+**Take a photo scene into Blender.** A scene made from one photograph exports
+as a single `.glb` file that Blender opens without any add-on (*File → Import →
+glTF 2.0*): the photo's camera exactly, the scene as a surface textured with the
+photograph, and the photograph as a backdrop. Rendered from that camera in
+Blender, it reproduces the photo.
 
 **Save the scene.** A scene file (`.dlscene`) records the scale,
 measurements, notes, viewpoints and section beside the splat, so the work can
@@ -110,9 +128,11 @@ setup and every stage in detail. With it running, the app gains:
 - **A scene from a video.** Drop a walked phone video, trim it to the part worth
   solving, and it runs frames → camera poses → splat training, with a progress
   card that shows the tools' own counts and an honest time estimate.
-- **A scene from one photograph**, in seconds, using metric depth — so it opens
-  already scaled. It is 2.5D: right from near the original viewpoint, stretched
-  and holed away from it. An impression, not a survey — and no mesh or terrain
+- **A scene from one photograph**, in seconds, using a depth model that
+  estimates metres. The estimate is offered, never applied for you, and marked
+  "est." wherever it shows: on a capture with a measured dimension the same
+  model was 5–12× off. It is 2.5D: right from near the original viewpoint,
+  stretched and holed away from it. An impression, not a survey — and no mesh or terrain
   model comes from it, because one picture gives no solve to build them from.
 - **A measurable mesh** from the same capture: a dense point cloud and surface
   for Blender, QGIS or Rhino.

@@ -21,8 +21,9 @@ const SPLAT_EXTS = ["ply", "spz", "splat", "ksplat", "sog", "zip"];
 // and on a small scene that costs picking accuracy for no visible gain.
 const LOD_THRESHOLD = 1_000_000;
 
-// In the photo view the photo's rectangle fills this share of the viewport
-// along whichever side limits it, so its outline stays visible as a frame.
+// In a frame view -- the photo's, or the frame a capture camera filmed -- the
+// frame fills this share of the viewport along whichever side limits it, so
+// its outline stays visible.
 const PHOTO_FILL = 0.92;
 
 export class Viewer {
@@ -87,6 +88,7 @@ export class Viewer {
      * outlines the photo's rectangle; any drag or zoom leaves it. */
     this.photoCamera = null;   // { hfov: degrees, aspect: width / height }
     this.photoView = false;
+    this.captureFrame = false;
     this._lastNow = 0;
     if (overlayEl?.parentElement) {
       const mask = document.createElement("div");
@@ -206,6 +208,7 @@ export class Viewer {
 
     this.mesh = mesh;
     this.scene.add(mesh);
+    this._applyViewColour();
 
     this._applyFlip();
     this.bounds = this._worldBounds();
@@ -234,6 +237,7 @@ export class Viewer {
     this.hasLod = false;
     this.photoCamera = null;
     this.photoView = false;
+    this.captureFrame = false;
     this.bounds = null;
     this._robustLocal = null;
   }
@@ -285,6 +289,7 @@ export class Viewer {
     const box = this.frameBounds();
     if (!box) return;
     this.photoView = false;
+    this.captureFrame = false;
     const size = box.getSize(new THREE.Vector3());
     const centre = box.getCenter(new THREE.Vector3());
     const radius = Math.max(size.length() * 0.5, 1e-3);
@@ -469,13 +474,21 @@ export class Viewer {
     if (this.onWalk) this.onWalk(this.captureIndex, cams.length, !!this._walk);
   }
 
-  goToCaptureCamera(i, animate = true) {
+  /** Stand at capture camera `i`; with `frame`, show the frame it filmed. */
+  goToCaptureCamera(i, animate = true, frame = false) {
     const state = this.captureCameraState(i);
     if (!state) return false;
     this.captureIndex = ((i % this.captureCameras.length) + this.captureCameras.length)
       % this.captureCameras.length;
     this.setCameraState(state, animate);
+    this.captureFrame = !!frame && this.hasCaptureFrames();  // after setCameraState
     return true;
+  }
+
+  /** cameras.json version 3 records each frame's size; older files do not. */
+  hasCaptureFrames() {
+    const c = this.captureCameras?.[this.captureIndex || 0];
+    return !!(c && c.fovY > 0 && c.width > 0 && c.height > 0);
   }
 
   /* ------------------------------------------------------------ photo view */
@@ -483,6 +496,7 @@ export class Viewer {
   /** Adopt a single photograph's camera: `{ hfov, aspect }`, or null. */
   setPhotoCamera(p) {
     this.photoView = false;
+    this.captureFrame = false;
     this.photoCamera = p && p.hfov > 0 && p.aspect > 0
       ? { hfov: p.hfov, aspect: p.aspect } : null;
   }
@@ -525,41 +539,65 @@ export class Viewer {
     return true;
   }
 
-  leavePhotoView() { this.photoView = false; }
+  leavePhotoView() { this.photoView = false; this.captureFrame = false; }
 
-  /** The vertical field of view that fits the photo's frustum in the viewport. */
-  _photoFovY() {
-    const p = this.photoCamera;
-    const th = Math.tan(THREE.MathUtils.degToRad(p.hfov) / 2);
-    const fit = Math.max(th / p.aspect, th / this.camera.aspect) / PHOTO_FILL;
+  /**
+   * The frame being shown, as { th: tan(horizontal fov / 2), aspect }, or null:
+   * the photograph in the photo view, or -- in the camera view -- the video
+   * frame the current capture camera filmed. The CAMERA FRAME VIEW exists
+   * because a phone films portrait while a viewer window is wide: at 60° a
+   * wide window shows about 87° across where the phone saw about 44°, so most
+   * of the view from a capture camera was never filmed from there, and that is
+   * where a splat scene guesses (stray tints, smears). Outlining the real frame
+   * says which part of the view is evidence. The orbit camera has no roll, so a
+   * frame filmed tilted is outlined upright: off by the camera's own roll, a
+   * few degrees on a hand-held walk.
+   */
+  _frameSpec() {
+    if (this.photoView && this.photoCamera) {
+      return { th: Math.tan(THREE.MathUtils.degToRad(this.photoCamera.hfov) / 2),
+               aspect: this.photoCamera.aspect };
+    }
+    if (this.captureFrame && this.hasCaptureFrames()) {
+      const c = this.captureCameras[this.captureIndex || 0];
+      const aspect = c.width / c.height;
+      return { th: Math.tan(THREE.MathUtils.degToRad(c.fovY) / 2) * aspect, aspect };
+    }
+    return null;
+  }
+
+  /** The vertical field of view that fits the frame's frustum in the viewport. */
+  _frameFovY(f) {
+    const fit = Math.max(f.th / f.aspect, f.th / this.camera.aspect) / PHOTO_FILL;
     return THREE.MathUtils.radToDeg(2 * Math.atan(fit));
   }
 
-  /** The photo's rectangle in canvas CSS pixels while in the photo view, else null. */
-  photoFrameRect() {
-    if (!this.photoView || !this.photoCamera) return null;
+  /** The shown frame's rectangle in canvas CSS pixels, or null. */
+  frameRect() {
+    const f = this._frameSpec();
+    if (!f) return null;
     const W = this.canvas.clientWidth, H = this.canvas.clientHeight;
     if (!W || !H) return null;
     const T = Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2);
-    const th = Math.tan(THREE.MathUtils.degToRad(this.photoCamera.hfov) / 2);
-    const w = Math.min(W, (th / (T * this.camera.aspect)) * W);
-    const h = Math.min(H, (th / this.photoCamera.aspect / T) * H);
+    const w = Math.min(W, (f.th / (T * this.camera.aspect)) * W);
+    const h = Math.min(H, (f.th / f.aspect / T) * H);
     return { x: (W - w) / 2, y: (H - h) / 2, w, h };
   }
 
-  /* The field of view eases between the photo's and the ordinary one, so
-   * leaving the photo view is a quick widening rather than a jump. */
+  /* The field of view eases between the frame's and the ordinary one, so
+   * leaving a frame view is a quick widening rather than a jump. */
   _tickFov(now) {
     const dt = Math.min(0.1, Math.max(0, (now - (this._lastNow || now)) / 1000));
     this._lastNow = now;
-    const goal = this.photoView && this.photoCamera ? this._photoFovY() : FOV_Y;
+    const spec = this._frameSpec();
+    const goal = spec ? this._frameFovY(spec) : FOV_Y;
     const d = goal - this.camera.fov;
     if (Math.abs(d) > 1e-3) {
       this.camera.fov = Math.abs(d) < 0.05 ? goal : this.camera.fov + d * Math.min(1, dt * 12);
       this.camera.updateProjectionMatrix();
     }
     if (this._frameEl) {
-      const r = this.photoFrameRect();
+      const r = this.frameRect();
       this._frameEl.hidden = !r;
       if (r) {
         const st = this._frameEl.style;
@@ -647,6 +685,28 @@ export class Viewer {
   }
   setBlur(v) { this.spark.blurAmount = v; }
 
+  /* Colour by viewing angle: a trained splat carries spherical-harmonic
+   * colour, so it can look different from different directions -- how sheen and
+   * reflections are captured. Where the camera never looked from, that colour
+   * is extrapolated, and can show as stray tints. Off, every splat keeps its
+   * base colour from every side (Spark's maxSh = 0). The choice outlives a
+   * scene load: each new scene is a new mesh, so it is re-applied there. */
+  setViewColour(on) {
+    this.viewColour = !!on;
+    this._applyViewColour();
+  }
+  _applyViewColour() {
+    if (!this.mesh) return;
+    this.mesh.maxSh = this.viewColour === false ? 0 : 3;
+    this.mesh.updateGenerator?.();
+    this.mesh.updateVersion?.();
+  }
+  /** Whether the open scene has any colour-by-angle to switch. */
+  hasViewColour() {
+    const p = this.mesh?.packedSplats;
+    return !!(p && (p.hasRgbDir?.() || p.extra?.sh1));
+  }
+
   /* ---------------------------------------------------------------- camera */
 
   _applyCamera() {
@@ -686,7 +746,8 @@ export class Viewer {
   }
 
   setCameraState(s, animate = false) {
-    this.photoView = false;          // any other view leaves the photo's
+    this.photoView = false;          // any other view leaves a frame view
+    this.captureFrame = false;
     const to = {
       yaw: s.yaw, pitch: s.pitch, dist: s.dist,
       target: new THREE.Vector3().fromArray(s.target),
@@ -742,7 +803,7 @@ export class Viewer {
       const dx = e.clientX - lastX, dy = e.clientY - lastY;
       lastX = e.clientX; lastY = e.clientY;
       moved += Math.abs(dx) + Math.abs(dy);
-      if (moved > 4) this.photoView = false;   // a drag leaves the photo view
+      if (moved > 4) { this.photoView = false; this.captureFrame = false; }   // a drag leaves a frame view
       if (panning) {
         const k = this._cam.dist * 0.0015;
         const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 0);
@@ -805,6 +866,7 @@ export class Viewer {
    */
   zoomAt(ndcX, ndcY, deltaY) {
     this.photoView = false;
+    this.captureFrame = false;
     this._anim = null;
     const anchor = this._zoomAnchor(ndcX, ndcY);
     if (anchor) {

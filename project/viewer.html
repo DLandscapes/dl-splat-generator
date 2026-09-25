@@ -71,6 +71,20 @@
           <div class="meta" id="scene-meta"></div>
         </div>
       </div>
+      <!-- What the scene's source photo or video says about itself: when,
+           where, with what (tools/source_meta.py). Read locally; nothing here
+           goes anywhere. A sample carries it without its GPS position. -->
+      <details class="sub" id="panel-source" hidden>
+        <summary class="subhead">Source</summary>
+        <div class="sub-body">
+          <dl id="source-facts" class="facts"></dl>
+          <div class="row" id="source-copy-row" hidden>
+            <button id="source-copy" class="ghost">Copy coordinates</button>
+          </div>
+          <div class="meta" id="source-note"></div>
+        </div>
+      </details>
+
       <!-- Samples: real scenes made with this tool, one from a walked video and
            one from a single photograph, read from data/samples/samples.json
            (tools/make_sample.py writes it). Hidden when there are none. The
@@ -82,18 +96,9 @@
         <div id="samples-grid"></div>
       </div>
 
-      <!-- Synthetic scenes, for checking the tool rather than showing a site. -->
-      <details class="sub" id="panel-tests">
-        <summary class="subhead">Test scenes</summary>
-        <div class="sub-body">
-          <div class="meta">Synthetic, for checking the tool rather than showing a
-            site. Both are in metres by construction.</div>
-          <div class="row">
-            <button id="landform-btn" class="ghost" title="A laser-cut contour model: 0.2 m sheets on a 12 × 9 m base board">Contour landform</button>
-            <button id="calib-btn" class="ghost" title="Markers at exactly known distances — what the acceptance test measures">Measuring test</button>
-          </div>
-        </div>
-      </details>
+      <!-- The synthetic test scenes (data/landform.ply, data/calibration.ply)
+           are NOT offered here: Marc took them off the menu on 2026-09-24. The
+           acceptance test still loads calibration.ply directly. -->
 
       <!-- Only shown when a capture backend is present; the viewer works without one. -->
       <details class="sub" id="panel-make" hidden>
@@ -133,11 +138,12 @@
           </label>
           <label class="check">
             <input type="checkbox" id="make-privacy" checked>
-            Mask faces before processing
+            Blur faces
           </label>
           <div class="meta" id="make-privacy-note">
-            Faces are blurred before anything else sees the frames. Plates, signage and
-            windows are <b>not</b> detected &mdash; review the result before publishing.
+            Faces in the video are blurred first, so they never end up in the scene.
+            Only faces are found &mdash; number plates, signs, house numbers and people
+            seen from behind stay as filmed. Look through the scene before you share it.
           </div>
           <!-- The other way in: one photograph, metric depth, seconds instead of
                half an hour. Deliberately below the video route and visibly separate,
@@ -154,9 +160,10 @@
               <option value="indoor">Indoor &mdash; rooms</option>
             </select>
           </label>
-          <div class="meta">Depth is estimated in metres, so the scene opens already
-            scaled. It is <b>2.5D</b>: right from near the original viewpoint, and
-            stretched where surfaces were hidden. An impression, not a survey.</div>
+          <div class="meta why">Depth is estimated in metres &mdash; an <b>estimate</b>,
+            offered on the Scale panel, never applied for you. It is <b>2.5D</b>:
+            right from near the original viewpoint, and stretched where surfaces
+            were hidden. An impression, not a survey.</div>
 
           <div id="make-progress" hidden>
             <div class="meta" id="make-stage">&hellip;</div>
@@ -199,11 +206,16 @@
             <span>Softness <em id="blur-val">0.30</em></span>
             <input type="range" id="blur" min="0" max="1" step="0.05" value="0.3">
           </label>
+          <label class="check"><input type="checkbox" id="plan-toggle" checked>
+            Plan view</label>
+          <label class="check"><input type="checkbox" id="view-colour" checked>
+            Colour by viewing angle</label>
+          <div class="meta" id="view-colour-note"></div>
           <div class="row">
             <button id="flip-btn" class="ghost toggle">Flip up-axis</button>
             <button id="reset-btn" class="ghost">Reset view</button>
           </div>
-          <div class="meta keys">
+          <div class="meta why keys">
             <b>Drag</b> orbit &middot; <b>Right-drag</b> pan &middot; <b>Wheel</b> zoom to cursor
             &middot; <b>Double-click</b> centre on that point &middot; <b>R</b> reset
             &middot; <b>1&ndash;4</b> top / front / right / three-quarter
@@ -233,6 +245,11 @@
           <div class="meta" id="scale-state">Not calibrated &mdash; units are arbitrary.</div>
           <button id="calibrate-btn" class="ghost tool">Calibrate from known distance</button>
           <button id="assume-metric" class="ghost">Scene is already in metres</button>
+          <!-- A single photograph's depth model gives metres, but only as an
+               estimate: measured 5-12x too deep on a calibrated capture. It is
+               offered, never applied for you, and labelled wherever it shows. -->
+          <button id="use-estimate" class="ghost" hidden
+                  title="The depth model's metres — an estimate, labelled as one">Use the depth estimate</button>
         </div>
       </details>
 
@@ -288,7 +305,7 @@
           </div>
         </div>
         <button id="section-reset" class="ghost">Whole scene</button>
-        <div class="meta">Only what is inside the box stays visible. Pull one
+        <div class="meta why">Only what is inside the box stays visible. Pull one
           side in for a plane cut, two for a slab.</div>
       </div>
     </div>
@@ -313,9 +330,9 @@
         <input type="range" id="walk-speed" min="1" max="30" step="1" value="8">
       </label>
       <label class="check"><input type="checkbox" id="walk-loop"> Loop</label>
-      <div class="meta keys">Follows the path the camera actually took. Drag the
+      <div class="meta why keys">Follows the path the camera actually took. Drag the
         view to take control back.</div>
-      <div class="meta keys">Positions the scene was actually filmed from. A splat
+      <div class="meta why keys">Positions the scene was actually filmed from. A splat
         scene is only faithful near these &mdash; elsewhere you are seeing
         reconstruction, not site.</div>
     </div>
@@ -330,7 +347,7 @@
       <h2>Terrain</h2><span class="sec-badge" id="b-mesh"></span>
     </summary>
     <div class="sec-body">
-      <div class="meta" id="mesh-intro">The same capture as geometry &mdash; a dense point cloud and a
+      <div class="meta why" id="mesh-intro">The same capture as geometry &mdash; a dense point cloud and a
         surface you can take into Blender, QGIS or Rhino and draw from. Nothing is
         re-captured or re-solved.</div>
       <!-- A single-photo scene has no solve to build from: this replaces the
@@ -367,7 +384,7 @@
       <details class="sub" id="dem-block" hidden>
         <summary class="subhead">Ground and terrain model</summary>
         <div class="sub-body">
-          <div class="meta">Separates the ground from what stands on it, then grids
+          <div class="meta why">Separates the ground from what stands on it, then grids
             it into a GeoTIFF &mdash; the file <b>DL-TerrainSlicer</b> turns into
             contours and laser-cut sheets.</div>
           <label class="check"><input type="checkbox" id="dem-scale-use">
@@ -445,9 +462,10 @@
             <button id="still-go" class="ghost">Save a still</button>
             <button id="still-views" class="ghost">One per viewpoint</button>
           </div>
-          <div class="meta" id="still-state">The view exactly as framed, without
-            the section box's outline. <b>One per viewpoint</b> saves a still of
-            every saved viewpoint, as one ZIP.</div>
+          <div class="meta why">The view exactly as framed, without the section
+            box's outline. <b>One per viewpoint</b> saves a still of every saved
+            viewpoint, as one ZIP.</div>
+          <div class="meta" id="still-state"></div>
         </div>
       </details>
 
@@ -463,10 +481,35 @@
 
       <!-- Only for a scene made here, and only when the Blender add-on project
            (BLE) is present: it owns the package format and its writer. -->
+      <!-- A single-photo scene's way into Blender: a glTF file plain Blender
+           imports, built here in the browser (static/gltf.js). Shown instead
+           of the package below, which needs a video's camera path. -->
+      <details class="sub" id="panel-gltf" hidden>
+        <summary class="subhead">For Blender</summary>
+        <div class="sub-body">
+          <div class="meta why">One <b>.glb</b> file that Blender opens as it is &mdash;
+            <i>File &rarr; Import &rarr; glTF 2.0</i>, no add-on: the photo's camera,
+            exactly; the scene as a surface textured with the photograph; and the
+            photograph as a backdrop. From the camera it is the photo; away from
+            it, the 2.5D it is.</div>
+          <label class="check"><input type="checkbox" id="gltf-fill" checked>
+            Fill the gaps &mdash; one surface, no holes</label>
+          <div class="meta why" id="gltf-fill-note">Every gap gets the depth around it, so
+            the surface is a single sheet; from the side, faces stretch across each
+            depth jump. Off: the gaps stay and a backdrop shows through them.</div>
+          <div class="row">
+            <button id="gltf-go" class="ghost">Export .glb</button>
+            <button id="gltf-splat-go" class="ghost"
+                    title="The .glb plus the splat as a .ply in the same place, for a Gaussian-splat add-on">With the splat (.zip)</button>
+          </div>
+          <div class="meta" id="gltf-state"></div>
+        </div>
+      </details>
+
       <details class="sub" id="panel-blender" hidden>
         <summary class="subhead">For Blender</summary>
         <div class="sub-body">
-          <div class="meta" id="blender-note">One package holding the video, the solved
+          <div class="meta why" id="blender-note">One package holding the video, the solved
             camera path and the sparse model. The <b>Capture Walk</b> add-on opens it
             and puts the walk back on the footage.</div>
           <label class="check"><input type="checkbox" id="blender-splat">
@@ -527,11 +570,25 @@
     <!-- Stand where the camera stood. Only useful for a scene made here, so it
          disables itself for anything else. -->
     <button id="gizmo-camera" class="wide" title="Stand where the camera stood">Camera</button>
+    <!-- The DL tools' density switch (as DL-TerrainMapper's #explainToggle):
+         it hides the EXPLANATIONS (.why) once they have been read. Warnings
+         and live state (.meta without .why) always stay -- hiding those would
+         lose what a panel exists to say. Out here, not in the window's header,
+         because it governs the whole window and the header is a drag handle. -->
+    <button id="explainToggle" class="wide" title="Hide the explanations">?</button>
     <div id="gizmo-frames" hidden>
       <input type="range" id="gizmo-frame" min="0" max="0" step="1" value="0"
              title="Which frame of the capture to stand at">
       <div id="gizmo-frame-label">—</div>
     </div>
+  </div>
+  <!-- The plan: the scene from above, the capture path and where you stand
+       (static/plan.js). Sits under the navigation column; Display toggles it. -->
+  <div id="plan" hidden>
+    <div class="plan-head"><span>Plan</span>
+      <button id="plan-close" class="link" title="Hide the plan (Display → Plan view)">&times;</button></div>
+    <canvas title="Click near the path to stand at that capture position"></canvas>
+    <div class="plan-note"></div>
   </div>
   <div id="hint" class="hud" hidden></div>
   <div id="status" class="hud" hidden></div>

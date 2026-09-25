@@ -5,6 +5,8 @@ import { Tools } from "./tools.js";
 import {
   buildScene, applyScene, downloadBlob, sha256, makeZip,
 } from "./scene.js";
+import { photoSceneGlb, splatPlyForBlender } from "./gltf.js";
+import { PlanView } from "./plan.js";
 
 const $ = (id) => document.getElementById(id);
 const BUILD = "2026-09-08";
@@ -22,6 +24,8 @@ const freshSection = () =>
 const display = {
   detail: null,            // share of splats drawn; null = this computer's default
   blur: 0.3,
+  viewColour: true,        // colour by viewing angle (spherical harmonics)
+  plan: true,              // the plan view under the navigation column
   section: freshSection(),
 };
 
@@ -81,6 +85,7 @@ async function loadSource(next, label, fromGenerated = null, sample = null) {
     tools.notes = [];
     tools.viewpoints = [];
     tools.calibrated = false;
+    tools.estimated = false;
     tools.scaleFactor = 1;
     display.section = freshSection();
     display.detail = null;   // a new scene starts at this computer's default
@@ -116,6 +121,8 @@ function onSceneChanged() {
       `${sourceInfo.count.toLocaleString("en-US")} splats · ${sourceInfo.type}`;
   }
   syncDetailUi();
+  syncViewColourUi();
+  rebuildPlan();
   // section box resets to the whole scene when a new scene arrives
   syncSectionUi();
   refreshLists();
@@ -136,7 +143,8 @@ function syncGroups() {
   badge("b-import", generatedName ? generatedName : (sourceInfo ? sourceInfo.name : ""));
   badge("b-display", viewer.mesh ? `${tools.viewpoints.length || ""}` : "");
   badge("b-measure", tools.calibrated
-    ? `1 unit = ${tools.scaleFactor.toFixed(2)} m` : (viewer.mesh ? "no scale" : ""));
+    ? (tools.estimated ? "≈ 1 unit = 1 m, estimated" : `1 unit = ${tools.scaleFactor.toFixed(2)} m`)
+    : (viewer.mesh ? "no scale" : ""));
   badge("b-capture", viewer.captureCameras ? `${viewer.captureCameras.length} frames` : "");
 }
 
@@ -192,6 +200,112 @@ $("menu-chip").onclick = () => foldMenu(false);
 
 /* -------------------------------------------------------------------- lists */
 
+/* The open scene was made from ONE photograph, so its depth model's metres
+ * can be offered -- as an estimate. Set from the scene's record. */
+let photoScale = false;
+const photoScaleOffered = () => photoScale && !!viewer.mesh;
+let photoRecord = null;      // that scene's record, for the glTF export
+
+/* Where the photograph of the open photo scene can be fetched: a sample ships
+ * it beside its scene; a scene made here names it in capture.json by an
+ * absolute path under the project's input folder, which the launcher serves at
+ * /input/. Anything else is out of reach, and the export says so. */
+function photoUrl() {
+  if (currentSample?.photo) return new URL(currentSample.photo, samplesUrl()).href;
+  const src = String(photoRecord?.source || "").replace(/\\/g, "/");
+  const m = src.match(/\/input\/(.+)$/i);
+  return m ? "/input/" + m[1].split("/").map(encodeURIComponent).join("/") : null;
+}
+
+/* A photo scene into Blender: the .glb alone, or -- "with the splat" -- a ZIP
+ * of the .glb, the splat as a .ply in Blender's frame (splatPlyForBlender), so
+ * a Gaussian-splat add-on puts it exactly where the camera and surface are,
+ * and a README saying how. */
+async function exportPhotoForBlender(withSplat) {
+  const btn = $(withSplat ? "gltf-splat-go" : "gltf-go");
+  const url = photoUrl();
+  if (!url || !viewer.mesh || !photoRecord) return;
+  btn.disabled = true;
+  $("gltf-state").textContent = withSplat ? "Building the surface and the splat…" : "Building the surface…";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`the photograph could not be read (HTTP ${res.status})`);
+    let blob = await res.blob();
+    const bitmap = await createImageBitmap(blob);
+    // glTF carries PNG or JPEG only; anything else is re-encoded once -- and so
+    // is every JPEG: a phone JPEG is often stored sideways with an EXIF
+    // "rotate" flag, which the browser honours when decoding but Blender may
+    // not. Redrawn from the decoded bitmap it is upright pixels, flag gone.
+    let mime = blob.type;
+    if (mime !== "image/png") {
+      const c = document.createElement("canvas");
+      c.width = bitmap.width; c.height = bitmap.height;
+      c.getContext("2d").drawImage(bitmap, 0, 0);
+      blob = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.92));
+      mime = "image/jpeg";
+    }
+    const photo = { bytes: await blob.arrayBuffer(), mime,
+                    width: bitmap.width, height: bitmap.height };
+    const scale = tools.calibrated ? tools.scaleFactor : 1;
+    const estimated = !tools.calibrated || tools.estimated;
+    const note = estimated
+      ? "Scale is the depth model's ESTIMATE (1 unit ~ 1 m), not a measurement."
+      : `Calibrated in the viewer: 1 unit = ${scale.toFixed(4)} m.`;
+    const fill = $("gltf-fill").checked;
+    const { blob: glbBlob, stats } = photoSceneGlb({
+      splats: viewer.mesh.packedSplats, record: photoRecord, photo, scale, note, fill,
+    });
+    const stem = stillStem();
+    const how = `In Blender set the output resolution to ${photo.width} × ${photo.height} to `
+      + "render the photo's frame, and Color Management → View Transform to Standard "
+      + "for the photo's own colours (the default, AgX, reshapes them). "
+      + (estimated ? "Its metres are the depth model's estimate." : "In the scene's calibrated metres.");
+    const surface = fill
+      ? `one surface, ${stats.filledIn.toLocaleString("en-US")} gap cells filled`
+      : "gaps kept, with a backdrop";
+    let saved;
+    if (!withSplat) {
+      saved = `${stem}-blender.glb`;
+      downloadBlob(glbBlob, saved);
+    } else {
+      const ply = splatPlyForBlender({ splats: viewer.mesh.packedSplats, scale });
+      const readme = [
+        `${stem} -- a photo scene for Blender, from DL-SplatGenerator (Digital Landscapes)`,
+        "",
+        `${stem}.glb        File > Import > glTF 2.0. The photo's camera, exactly, and the`,
+        "                   scene as a surface textured with the photograph.",
+        `${stem}-splat.ply  The Gaussian splat, for a Gaussian-splat importer (the Capture`,
+        "                   Walk add-on imports one; Blender itself does not). It is written",
+        "                   in Blender's own axes, already turned the way the glTF import",
+        "                   turns the camera, so an importer that keeps a .ply's coordinates",
+        "                   as they are puts it exactly where the camera and surface are.",
+        "",
+        `Render resolution: ${photo.width} x ${photo.height}. Color Management > View Transform:`,
+        "Standard, for the photo's own colours.",
+        estimated ? "Scale: the depth model's ESTIMATE, 1 unit ~ 1 m -- not a measurement."
+                  : `Scale: calibrated in the viewer, 1 unit = ${scale.toFixed(4)} m.`,
+        "A scene from one photograph is 2.5D: right from near the camera, stretched away from it.",
+        "",
+      ].join("\r\n");
+      const enc = new TextEncoder();
+      saved = `${stem}-blender.zip`;
+      downloadBlob(makeZip([
+        { name: `${stem}.glb`, data: new Uint8Array(await glbBlob.arrayBuffer()) },
+        { name: `${stem}-splat.ply`, data: new Uint8Array(await ply.arrayBuffer()) },
+        { name: "README.txt", data: enc.encode(readme) },
+      ]), saved);
+    }
+    $("gltf-state").textContent = `Saved ${saved} — ${stats.triangles.toLocaleString("en-US")} `
+      + `triangles (${surface})${withSplat ? `, ${viewer.splatCount.toLocaleString("en-US")} splats` : ""}. ${how}`;
+    window.dl.lastGltf = { stats, blob: glbBlob, withSplat };   // for the browser-side checks
+  } catch (err) {
+    $("gltf-state").textContent = `⚠ ${err.message}`;
+  }
+  btn.disabled = false;
+}
+$("gltf-go").onclick = () => exportPhotoForBlender(false);
+$("gltf-splat-go").onclick = () => exportPhotoForBlender(true);
+
 function refreshLists() {
   const mList = $("measure-list");
   mList.innerHTML = "";
@@ -219,11 +333,16 @@ function refreshLists() {
     const name = document.createElement("span");
     name.className = "grow";
     name.textContent = n.title;
+    const edit = document.createElement("button");
+    edit.className = "link";
+    edit.textContent = "edit";
+    edit.title = "Change the title and text — or double-click the note in the scene";
+    edit.onclick = () => tools.editNote(n.id);
     const del = document.createElement("button");
     del.className = "link";
     del.textContent = "×";
     del.onclick = () => tools.remove(n.id);
-    li.append(name, del);
+    li.append(name, edit, del);
     nList.appendChild(li);
   }
 
@@ -244,11 +363,21 @@ function refreshLists() {
     vList.appendChild(li);
   }
 
-  $("scale-state").textContent = tools.calibrated
-    ? `1 scene unit = ${tools.scaleFactor.toFixed(4)} m — measurements are in metres.`
-    : "Not calibrated. A splat scene has no built-in scale, so measurements "
-      + "show as “units” until you set one.";
-  $("assume-metric").disabled = tools.calibrated && tools.scaleFactor === 1;
+  $("scale-state").textContent = !tools.calibrated
+    ? (photoScaleOffered()
+      ? "Not calibrated. The depth model estimated metres from this one picture, "
+        + "but on a calibrated capture it was 5–12× off — calibrate from a known "
+        + "distance for real measurements, or use the estimate, labelled as one."
+      : "Not calibrated. A splat scene has no built-in scale, so measurements "
+        + "show as “units” until you set one.")
+    : tools.estimated
+      ? "1 unit ≈ 1 m — ESTIMATED by the depth model from one picture, not "
+        + "measured, and it can be off many times over. Every figure is marked "
+        + "“est.”; calibrate from a known distance to replace it."
+      : `1 scene unit = ${tools.scaleFactor.toFixed(4)} m — measurements are in metres.`;
+  $("assume-metric").disabled = tools.calibrated && tools.scaleFactor === 1 && !tools.estimated;
+  $("use-estimate").hidden = !photoScaleOffered();
+  $("use-estimate").disabled = tools.calibrated && tools.estimated;
   labelStillSize();                  // "one per viewpoint" follows the list
 
   for (const [id, kind] of [["tool-dist", "distance"], ["tool-height", "height"],
@@ -257,7 +386,9 @@ function refreshLists() {
     $(id).classList.toggle("on", tools.active === kind);
   }
 }
-tools.onChange = refreshLists;
+// the section badges follow too: the Measure badge used to keep saying
+// "no scale" after a scale was set, until the next scene load
+tools.onChange = () => { refreshLists(); syncGroups(); syncPlanScale(); };
 
 /* ------------------------------------------------------------------- inputs */
 
@@ -1081,6 +1212,9 @@ async function refreshBlenderPanel() {
 
   panel.hidden = false;
   panel.dataset.scene = generatedName;
+  // a single-photo scene has no camera path to pack: its way into Blender is
+  // the glTF section above, so this one steps aside
+  if (info.singlePhoto) { panel.hidden = true; syncGroups(); return; }
   $("blender-go").disabled = !info.ready;
   $("blender-splat").disabled = !info.splat;
   $("blender-splat-note").textContent = info.splat
@@ -1205,11 +1339,6 @@ async function listGeneratedScenes() {
 listGeneratedScenes();
 detectBackend();
 
-$("landform-btn").onclick = () =>
-  loadSource({ url: "data/landform.ply", name: "landform.ply" }, "contour landform");
-$("calib-btn").onclick = () =>
-  loadSource({ url: "data/calibration.ply", name: "calibration.ply" }, "measuring test");
-
 /* ------------------------------------------------------------------ samples */
 
 /* Real scenes made with this tool, listed in data/samples/samples.json (written
@@ -1238,7 +1367,7 @@ async function listSamples() {
       const data = await res.json();
       if (data?.format === "dlsamples" && Array.isArray(data.samples)) list = data.samples;
     }
-  } catch { /* no samples shipped: the test scenes stand alone */ }
+  } catch { /* no samples shipped: the block stays hidden */ }
 
   const grid = $("samples-grid");
   grid.innerHTML = "";
@@ -1264,7 +1393,7 @@ async function listSamples() {
     title.textContent = s.title;
     const line = document.createElement("span");
     line.textContent = s.kind === "photo"
-      ? `One photograph · 2.5D, metric · ${shortCount(s.splats)} splats`
+      ? `One photograph · 2.5D, scale estimated · ${shortCount(s.splats)} splats`
       : `A walked video · ${s.frames} frames solved · ${shortCount(s.splats)} splats`;
     cap.append(title, line);
     tile.append(frame, cap);
@@ -1275,8 +1404,6 @@ async function listSamples() {
     grid.appendChild(tile);
   }
   $("samples").hidden = !list.length;
-  // with nothing to show off, the test scenes are what there is to open
-  if (!list.length) $("panel-tests").open = true;
 }
 listSamples();
 
@@ -1377,12 +1504,190 @@ $("blur").oninput = (e) => {
   viewer.setBlur(display.blur);
   $("blur-val").textContent = display.blur.toFixed(2);
 };
+
+/* ------------------------------------------------------ the density switch */
+
+/* Hide the explanations once they have been read -- the DL tools' `?`, as in
+ * DL-TerrainMapper. Only `.why` goes (see the stylesheet); warnings and live
+ * state stay. HIDDEN BY DEFAULT, as Marc decided for TerrainMapper: the prose
+ * earns its place the first time and is furniture after. The choice is
+ * remembered on this browser; when storage is unavailable it simply starts
+ * hidden again. */
+function setTerse(terse) {
+  document.body.classList.toggle("terse", terse);
+  const b = $("explainToggle");
+  b.setAttribute("aria-pressed", String(terse));
+  b.title = terse ? "Show the explanations" : "Hide the explanations";
+  try { localStorage.setItem("dlsg.terse", terse ? "1" : "0"); } catch { /* not offered */ }
+}
+$("explainToggle").onclick = () => setTerse(!document.body.classList.contains("terse"));
+setTerse((() => { try { return localStorage.getItem("dlsg.terse") ?? "1"; } catch { return "1"; } })() === "1");
+
+/* ------------------------------------------------------------ the source */
+
+/* What the scene's source photo or video says about itself (tools/source_meta.py):
+ * a scene made here asks the backend, which reads the file on demand; a sample
+ * carries it in its record, without the GPS position. Nothing leaves the
+ * machine -- coordinates can be copied, not sent to a map. */
+let sourceMeta = null;
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function formatWhen(s) {
+  const m = String(s || "").match(/^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)(?::\d\d(?:\.\d+)?)?(Z|[+-]\d\d:?\d\d)?/);
+  if (!m) return s || "";
+  const zone = !m[6] ? "" : m[6] === "Z" ? " (UTC)"
+    : ` (UTC${m[6].slice(0, 3)}:${m[6].slice(-2)})`;
+  return `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]} ${m[1]}, ${m[4]}:${m[5]}${zone}`;
+}
+
+async function refreshSourcePanel() {
+  const panel = $("panel-source");
+  const want = currentSample || generatedName;
+  sourceMeta = null;
+  if (currentSample) sourceMeta = currentSample.record?.source_meta || null;
+  else if (generatedName && hasBackend) {
+    try {
+      const res = await fetch(`/api/source/${encodeURIComponent(generatedName)}`);
+      if (res.ok) sourceMeta = await res.json();
+    } catch { /* no backend answer: the panel stays hidden */ }
+  }
+  if ((currentSample || generatedName) !== want) return;   // a newer scene took over
+  const m = sourceMeta;
+  panel.hidden = !m || !!m.error && !m.kind;
+  $("source-copy-row").hidden = true;
+  if (panel.hidden) { syncGroups(); return; }
+
+  const facts = [];
+  const add = (k, v) => { if (v) facts.push([k, v]); };
+  add("File", m.file);
+  add("Captured", formatWhen(m.when));
+  if (m.where) {
+    const w = m.where;
+    const ns = w.lat >= 0 ? "N" : "S", ew = w.lon >= 0 ? "E" : "W";
+    // 4 decimals (about 10 m) -- a phone's fix is good to several metres at
+    // best, and Apple records exactly this many; more would be false precision
+    add("Location", `${Math.abs(w.lat).toFixed(4)}° ${ns}, ${Math.abs(w.lon).toFixed(4)}° ${ew}`
+      + (w.accuracy_m ? ` · ±${Math.round(w.accuracy_m)} m` : ""));
+    if (w.alt != null) add("Altitude", `${Math.round(w.alt)} m`);
+    if (w.heading_deg != null) add("Facing", `${Math.round(w.heading_deg)}° from ${w.heading_ref || "north"}`);
+    $("source-copy-row").hidden = false;
+  }
+  const c = m.camera || {};
+  add("Device", [c.make, c.model].filter(Boolean).join(" ").replace(/^(\w+) \1\b/, "$1")
+    + (c.software && c.make === "Apple" ? ` · iOS ${c.software}` : ""));
+  if (c.focal_mm || c.focal_35mm) {
+    add("Lens", [c.lens, c.focal_mm && `${c.focal_mm} mm`,
+      c.focal_35mm && `${c.focal_35mm} mm equiv.`].filter(Boolean).join(" · "));
+  }
+  if (c.hfov_deg) add("Field of view", `${c.hfov_deg}° across`);
+  const im = m.image || {};
+  add(m.kind === "video" ? "Video" : "Image", [
+    im.width && `${im.width} × ${im.height}`, im.orientation,
+    im.fps && `${Math.round(im.fps * 100) / 100} fps`,
+    m.duration_s && `${m.duration_s} s`, im.format || im.codec,
+  ].filter(Boolean).join(" · "));
+  add("Artist", m.credit?.artist);
+  add("Licence", m.credit?.copyright);
+
+  const list = $("source-facts");
+  list.innerHTML = "";
+  for (const [k, v] of facts) {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = v;
+    list.append(dt, dd);
+  }
+
+  // the most useful fact: a photo's own lens against the field of view the
+  // scene was built with (every photo got 65° before 2026-09-25; since then the
+  // route uses the photo's own lens when the file records a 35 mm equivalent)
+  const notes = [];
+  const built = Number(photoRecord?.settings?.fov);
+  if (photoRecord && built) {
+    if (c.hfov_deg && Math.abs(c.hfov_deg - built) / built > 0.1) {
+      notes.push(`⚠ The scene was built assuming ${built}° across; this photo's lens `
+        + `gives ${c.hfov_deg}°. Its proportions are off by that much.`);
+    } else if (!c.hfov_deg && c.focal_mm) {
+      notes.push(`The file gives the focal length (${c.focal_mm} mm) but not the sensor `
+        + `size, so the true field of view is unknown; the scene assumed ${built}°.`);
+    }
+  }
+  if (m.where) notes.push("The position is where the capture began, from the phone's GPS; "
+    + "it does not place or turn the scene.");
+  if (currentSample && !m.where) notes.push("A sample carries no GPS position.");
+  $("source-note").textContent = notes.join(" ");
+  syncGroups();
+}
+
+$("source-copy").onclick = async () => {
+  const w = sourceMeta?.where;
+  if (!w) return;
+  const text = `${w.lat.toFixed(4)}, ${w.lon.toFixed(4)}`;
+  try { await navigator.clipboard.writeText(text); status(`Copied ${text}`, 3000); }
+  catch { status(text, 8000); }
+};
+
+/* Colour by viewing angle. Offered so a stray tint can be checked: if it goes
+ * when this is off, it was the extrapolated colour of a direction the camera
+ * never looked from. Disabled, and says why, on a scene with one colour per
+ * splat (a photo scene, a plain point cloud). */
+function syncViewColourUi() {
+  const has = viewer.hasViewColour();
+  const box = $("view-colour");
+  box.disabled = !has;
+  box.checked = has ? display.viewColour : false;
+  $("view-colour-note").textContent = !viewer.mesh ? ""
+    : !has ? "This scene has one colour per splat, the same from every side."
+    : display.viewColour
+      ? "Splats change colour with the direction you look from — how sheen and "
+        + "reflections are captured. Where the camera never looked from, that colour "
+        + "is guessed and can show as stray tints: switch it off to check."
+      : "Off: every splat keeps one colour from every side. A tint that went away "
+        + "came from the viewing angle; sheen and reflections are gone too.";
+}
+$("view-colour").onchange = (e) => {
+  display.viewColour = e.target.checked;
+  viewer.setViewColour(display.viewColour);
+  syncViewColourUi();
+};
 $("flip-btn").classList.add("on");
 $("flip-btn").onclick = () => {
   viewer.setFlip(!viewer.flip);
   $("flip-btn").classList.toggle("on", viewer.flip);
   applySection();
+  rebuildPlan();
 };
+
+/* ----------------------------------------------------------------- the plan */
+
+const plan = new PlanView(viewer, $("plan"));
+window.dl.plan = plan;                   // for the browser-side checks
+plan.onPick = (i) => {
+  viewer.stopWalk();
+  viewer.goToCaptureCamera(i, true, cameraView);
+  refreshCaptureState();
+  syncFrameSlider();
+};
+let planTimer = 0;
+/* Built once per scene -- one pass over the splats -- and deferred a moment so
+ * a scene appears before its plan is worked out. */
+function rebuildPlan() {
+  clearTimeout(planTimer);
+  $("plan").hidden = !(display.plan && viewer.mesh);
+  if ($("plan").hidden) return;
+  planTimer = setTimeout(() => { plan.build(); syncPlanScale(); }, 60);
+}
+function syncPlanScale() {
+  plan.setScale(tools.calibrated ? tools.scaleFactor : null, tools.estimated);
+}
+/* under the navigation column, whose height changes with the frame slider */
+function placePlan() {
+  const g = $("gizmo"), el = $("plan");
+  if (el.hidden) return;
+  const top = g.offsetTop + g.offsetHeight + 8;
+  if (el.style.top !== `${top}px`) el.style.top = `${top}px`;
+}
+$("plan-toggle").onchange = (e) => { display.plan = e.target.checked; rebuildPlan(); };
+$("plan-close").onclick = () => { display.plan = false; $("plan-toggle").checked = false; rebuildPlan(); };
 $("reset-btn").onclick = () => viewer.resetView();
 
 /* ------------------------------------------------------------------- gizmo */
@@ -1415,9 +1720,18 @@ function setCameraView(on) {
     const slider = $("gizmo-frame");
     slider.max = cams.length - 1;
     slider.value = viewer.captureIndex || 0;
-    viewer.goToCaptureCamera(Number(slider.value), true);
+    // the camera view shows the frame the camera filmed, outlined, the rest
+    // dimmed: in a wide window most of the view was never filmed from here
+    viewer.goToCaptureCamera(Number(slider.value), true, true);
     labelFrame();
+    if (!viewer.hasCaptureFrames()) {
+      status("This scene's camera file predates frame sizes, so the filmed frame "
+        + "cannot be outlined — re-export its cameras to see it.", 7000);
+    }
+  } else {
+    viewer.leavePhotoView();
   }
+  labelStillSize();
 }
 
 function labelFrame() {
@@ -1435,7 +1749,7 @@ function syncCameraButton() {
   $("gizmo-camera").title = photo
     ? "Stand where the photo was taken — its field of view, its frame"
     : has
-      ? "Stand where the camera stood"
+      ? "Stand where the camera stood — the frame it filmed outlined"
       : "Only for a scene made here — it needs the capture's camera path";
   if (!has) setCameraView(false);
 }
@@ -1444,7 +1758,7 @@ $("gizmo-camera").onclick = () => setCameraView(!cameraView);
 $("gizmo-frame").oninput = () => {
   labelFrame();
   viewer.stopWalk();
-  viewer.goToCaptureCamera(Number($("gizmo-frame").value), false);
+  viewer.goToCaptureCamera(Number($("gizmo-frame").value), false, cameraView);
   refreshCaptureState();          // the sidebar names the same frame
 };
 
@@ -1480,13 +1794,21 @@ const toolsOnFrame = viewer.onFrame;
 viewer.onFrame = () => {
   toolsOnFrame?.();
   drawGizmo();
+  placePlan();
+  plan.draw();
   // a drag or zoom leaves the photo view; the button follows
   if (cameraView && viewer.photoCamera && !viewer.captureCameras && !viewer.photoView) {
     cameraView = false;
     $("gizmo-camera").classList.remove("on");
+  }
+  // a still is cropped to a shown frame: its size note follows the frame
+  const framed = !!viewer.frameRect();
+  if (framed !== wasFramed) {
+    wasFramed = framed;
     if (!$("panel-still").hidden) labelStillSize();
   }
 };
+let wasFramed = false;
 
 /* ------------------------------------------------------------------ section */
 
@@ -1631,29 +1953,46 @@ async function syncFromCaptureRecord() {
   // a photo SAMPLE opens where it is faithful: in the photo's own frame
   if (currentSample?.kind === "photo" && viewer.photoCamera) setCameraView(true);
 
-  /* A single-photo scene is built from METRIC depth, so it really does open
-   * already scaled -- the depth tool's own last line tells you to press
-   * "Scene is already in metres". Pressing it for you is the honest version of
-   * that instruction, and it is what makes the panel's claim true. Only ever
-   * from the record's own `metric` flag, never guessed. */
-  if (rec?.metric === true && !tools.calibrated) {
-    // a photo scene is metric at 1 unit = 1 m; a capture carries whatever was
-    // measured on site, recorded as scale_m_per_unit
-    const f = Number(rec.scale_m_per_unit) > 0 ? Number(rec.scale_m_per_unit) : 1;
-    tools.setScale(f);
-    status(f === 1
-      ? "Depth is metric — this scene is already in metres."
-      : `Calibrated from ${rec.scale_note || "a measured dimension"}: `
-        + `1 unit = ${f.toFixed(3)} m.`, 7000);
+  /* Scale from the record -- only when someone MEASURED it. A capture whose
+   * capture.json records `scale_m_per_unit` (a dimension measured on site) is
+   * applied for you. A single photograph's depth-model metres are NOT: until
+   * 2026-09-24 they were applied as "already in metres", and on a calibrated
+   * capture the same model then put everything 5-12x too deep
+   * (output\research\DEPTH SMALL VS BASE - RESULTS - 002.md). They are offered
+   * on the Scale panel instead, and labelled as an estimate if used. */
+  photoScale = rec?.method === "single-image metric depth";
+  photoRecord = photoScale ? rec : null;
+  $("panel-gltf").hidden = !(photoScale && viewer.mesh);
+  if (photoScale) $("gltf-state").textContent = photoUrl() ? ""
+    : "The photograph this scene was made from is not reachable from here, and "
+      + "the export needs it — for the texture, and to rebuild the depth grid.";
+  $("gltf-go").disabled = $("gltf-splat-go").disabled = !photoUrl();
+  const measured = Number(rec?.scale_m_per_unit);
+  if (!photoScale && measured > 0 && !tools.calibrated) {
+    tools.setScale(measured);
+    status(`Calibrated from ${rec.scale_note || "a measured dimension"}: `
+      + `1 unit = ${measured.toFixed(3)} m.`, 7000);
+  } else if (photoScale && !tools.calibrated) {
+    status("Scale not set: this scene's metres are only the depth model's estimate "
+      + "— see Measure → Scale.", 7000);
   }
+  refreshLists();
+  syncGroups();
+  refreshSourcePanel();          // after photoRecord: it compares the lens with it
+  if (viewer.photoCamera) rebuildPlan();   // a photo scene's camera is known only now
 }
+
+$("use-estimate").onclick = () => {
+  tools.setScale(1, { estimated: true });
+  status("Using the depth estimate: every figure is marked “est.”", 6000);
+};
 
 $("walk-speed").oninput = () => {
   labelWalkSpeed();
   viewer.setWalkFps(Number($("walk-speed").value));
 };
 $("walk-loop").onchange = (e) => { if (viewer._walk) viewer._walk.loop = e.target.checked; };
-$("level-horizon").onchange = (e) => { viewer.setLevel(e.target.checked); };
+$("level-horizon").onchange = (e) => { viewer.setLevel(e.target.checked); rebuildPlan(); };
 /* Prev/Next in the sidebar and the scrubber in the corner are the same control
  * in two places, so each moves the other. */
 function syncFrameSlider() {
@@ -1664,7 +2003,7 @@ function syncFrameSlider() {
 
 function stepCapture(delta) {
   if (!viewer.captureCameras) return;
-  viewer.goToCaptureCamera(viewer.captureIndex + delta, true);
+  viewer.goToCaptureCamera(viewer.captureIndex + delta, true, cameraView);
   refreshCaptureState();
   syncFrameSlider();
 }
@@ -1715,7 +2054,7 @@ function stillWidth() {
   const v = $("still-size").value;
   const cssW = $("canvas").clientWidth || 1;
   const dpr = viewer.renderer.getPixelRatio();
-  const frame = viewer.photoFrameRect();
+  const frame = viewer.frameRect();
   if (v === "2x") return Math.round(cssW * dpr * 2);
   if (v === "3840") return Math.round(3840 * (frame ? cssW / frame.w : 1));
   return Math.round(cssW * dpr);
@@ -1726,7 +2065,7 @@ function stillSize() {
   const c = $("canvas");
   const cssW = Math.max(1, c.clientWidth);
   const scale = stillWidth() / cssW;
-  const frame = viewer.photoFrameRect();
+  const frame = viewer.frameRect();
   return frame
     ? { w: Math.round(frame.w * scale), h: Math.round(frame.h * scale), frame: true }
     : { w: Math.round(cssW * scale), h: Math.round(c.clientHeight * scale), frame: false };
@@ -1734,7 +2073,9 @@ function stillSize() {
 
 function labelStillSize() {
   const { w, h, frame } = stillSize();
-  $("still-size-note").textContent = `${w} × ${h} px${frame ? " — the photo's frame" : ""}`;
+  $("still-size-note").textContent = `${w} × ${h} px${frame
+    ? (viewer.photoCamera && !viewer.captureCameras ? " — the photo's frame" : " — the filmed frame")
+    : ""}`;
   $("still-views").disabled = !tools.viewpoints.length;
   $("still-views").title = tools.viewpoints.length
     ? `${tools.viewpoints.length} saved viewpoint(s)`
@@ -1824,7 +2165,7 @@ function drawOverlay(ctx, scale) {
 
 async function stillBlob() {
   if (viewer.walking) viewer.stopWalk();        // a moving camera never settles
-  const frame = viewer.photoFrameRect();         // read before rendering moves nothing
+  const frame = viewer.frameRect();         // read before rendering moves nothing
   let shot = await viewer.captureStill({ width: stillWidth() });
   const scale = shot.width / $("canvas").clientWidth;
   if ($("still-overlay").checked) {
@@ -1951,12 +2292,14 @@ async function loadSceneFile(file) {
     Object.assign(display, {
       detail: sceneDetail(d),
       blur: d.blur ?? display.blur,
+      viewColour: d.viewColour ?? true,
       // normalize handles scenes saved with the old plane shape {axis, t, flip}
       section: data.section ? Viewer.normalizeSection(data.section) : display.section,
     });
     $("blur").value = display.blur;
     $("blur-val").textContent = display.blur.toFixed(2);
     viewer.setBlur(display.blur);
+    viewer.setViewColour(display.viewColour);
     syncSectionUi();
     applySection();
     onSceneChanged();

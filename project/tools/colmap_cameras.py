@@ -124,16 +124,21 @@ def build(undistorted: Path) -> dict:
             "direction": [dx, -dy, -dz],
             "up": [ux, -uy, -uz],
             "fovY": round(fov_y, 3) if fov_y else None,
+            # the frame's own size: with fovY it gives the frustum the frame
+            # actually covers, which the viewer outlines in the camera view
+            "width": cam.get("width") or None,
+            "height": height or None,
         })
 
     centres = [c["position"] for c in out]
     centroid = [sum(p[i] for p in centres) / len(centres) for i in range(3)] if centres else [0, 0, 0]
     return {
         "format": "dlcameras",
-        "version": 2,
+        "version": 3,
         "note": ("positions, directions and up vectors are in viewer world space "
                  "(Y-up flip applied); version 2 added 'up', which the viewer "
-                 "averages to level the horizon"),
+                 "averages to level the horizon; version 3 added each frame's "
+                 "width and height, for the camera view's frame outline"),
         "count": len(out),
         "centroid": centroid,
         "cameras": out,

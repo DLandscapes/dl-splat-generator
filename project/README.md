@@ -67,6 +67,8 @@ static/
   viewer.js            render layer — wraps Spark, owns camera, picking, framing
   tools.js             scale calibration, measurement, annotations, viewpoints
   scene.js             .dlscene sidecar, download helper, ZIP writer
+  gltf.js              a photo scene as a .glb for Blender (see below)
+  plan.js              the plan view: the scene from above, the path
   ply.js               PLY header inspection and point-cloud parsing
   style.css            DL theme, DARK: the family's tokens with dark values,
                        because splats read best against a dark stage
@@ -87,6 +89,7 @@ tools/
   to_spz.mjs           PLY -> SPZ
   make_demo.mjs        generates the bundled test scenes
   make_sample.py       turns a scene made here into a sample (see below)
+  source_meta.py       what a source photo/video says about itself
   acceptance.html      measurement acceptance test (see below)
   smoke_capture.py     the generator's end-to-end gate
   sparse_model_test.py regression test for the sparse-model choice
@@ -107,11 +110,9 @@ the same bytes every run). The contour landform replaced a synthetic island on
 island left behind, so `calibration.ply` is still byte-identical to the file
 the acceptance test was built on (checked by SHA-256).
 
-## Samples and test scenes
+## Samples
 
-The Import panel offers two kinds of ready-made scene.
-
-**Samples** are real scenes made with this tool — one from a walked video, one
+**Samples** are the one kind of ready-made scene the Import panel offers: real scenes made with this tool — one from a walked video, one
 from a single photograph — shown as tiles in digital-landscapes.com's own
 grammar (12 px frames filled edge to edge, grayscale until reached for, the
 asymmetric chip, a caption under every image). A sample opens where it is
@@ -138,11 +139,12 @@ costs visible quality — on a dense 2 M-splat woodland at 400 k, 37–40 % of t
 pixels changed and the foreground went muddy; ranking by projected size
 instead was no better overall (28 % and 60 % at the same two cameras).
 
-**Test scenes** are synthetic and in metres by construction: the **contour
-landform** (0.2 m greyboard sheets on a 12 × 9 m base board — what DL-
-TerrainSlicer's models look like) and the **measuring test**, the acceptance
-test's own scene of markers at known distances. The measuring test proves the
-measuring tools, not a capture: it calibrates nothing.
+**The synthetic test scenes are not on the menu** (Marc, 2026-09-24): the
+contour landform (0.2 m greyboard sheets on a 12 × 9 m base board) and the
+acceptance test's scene of markers at known distances. `calibration.ply` is
+loaded directly by `tools/acceptance.html`; either file still opens by dropping
+it onto the viewer. The markers prove the measuring tools, not a capture: they
+calibrate nothing.
 
 ## Navigating
 
@@ -190,6 +192,110 @@ at one; drag the view at any time to take control back. Speed is in kept frames
 per second, and it defaults to the speed the site was filmed at when
 `capture.json` records the source `fps` (kept frames per second = fps ÷ stride;
 30 fps at stride 3 gives 10). Older records have no `fps` and fall back to 8.
+
+### The camera frame view
+
+The navigation's **Camera** button stands at a capture position **and outlines
+the frame that camera filmed**, dimming the rest; stepping or walking keeps it,
+a drag or zoom leaves it, and a still saved there is the frame. It exists
+because a phone films portrait and a viewer window is wide. Measured on
+IMG_1988 in a 1912 × 967 window: the filmed frame (1056 × 1879, 60.0° tall)
+covers **36° of the 98°** the view shows across. Everything outside it was
+never filmed from that position — the splat scene is guessing there, and that
+is where stray tints and smears appear. The outline is exact in field of view
+and shape; it is drawn upright, so a frame filmed with the phone tilted is off
+by that roll (a few degrees on a hand-held walk).
+
+It needs each frame's size, which `cameras.json` records since **version 3**
+(2026-09-25, `tools/colmap_cameras.py`). An older file still gives the camera
+positions but no outline, and the viewer says so.
+
+### The plan
+
+`static/plan.js` draws the scene from straight above, under the navigation
+column (*Display → Plan view* toggles it): the area the scan covers, the capture
+path (start dot, current position ringed), and where the viewer stands with a
+wedge for its field of view; a photo scene shows the photo's camera and field of
+view instead. Clicking near the path stands at that capture position.
+
+"Above" is the scene's own vertical (the capture cameras' mean up, as levelling
+uses); the page is turned so the walk heads up — **not north-up**: a solve has
+no compass, and a phone's single GPS fix cannot turn it. Built once per scene
+(57 ms for the 218 k-splat Netherlands clip, 0.48 s for a 2 M-splat capture,
+reading at most 400 k splats), redrawn only when the view changes.
+
+The area is **cut at eye level** — nothing above the cameras' height plus half
+their height over the ground — and a cell needs three splats. The first
+version kept each cell's highest splat regardless, and the canopy read as white
+speckle: a walk's sky splats sit at every height, and dropping the biggest 10 %
+and the top 3 % did not stop them. Cut at eye level it reads as a site plan
+(ground, paths, low growth), not an aerial.
+
+### The source
+
+*Import → Source* lists what the scene's source file says about itself
+(`tools/source_meta.py`, 2026-09-25). Chosen for a site capture: **when**
+(capture time with its time zone), **where** (GPS latitude, longitude, altitude,
+the fix's accuracy, a photo's compass heading), **with what** (device, lens,
+focal length and 35 mm equivalent → field of view), the **frame** (size,
+orientation, frame rate, duration) and the **credit** (artist, licence). Left
+out: exposure settings, maker notes, thumbnails.
+
+iPhone video carries all of it: IMG_1988 reads 11 Sep 2026 11:22 (UTC+02:00),
+69.7051° N 19.0098° E ±9 m, iPhone 14 Pro Max, 1080 × 1920 portrait at 30 fps.
+Coordinates are shown to 4 decimals — what Apple records, about 10 m, already
+finer than the fix. The position is where the capture **began**; it does not
+place or turn the scene.
+
+**The most useful fact is a photo's lens.** A photo scene is unprojected with a
+field of view: the depth gives the distance, the field of view how wide
+everything at that distance is. Since 2026-09-25 `depth_splat.py` uses **the
+photo's own lens** when its file records a 35 mm-equivalent focal length; a
+`--fov` given on the command line still wins, and with neither it assumes 65°
+(a phone's main camera is 65–70°). `capture.json` records which, as
+`settings.fov_source`. Scenes made before then all used 65°; the panel warns
+when a scene's field of view differs from its photo's lens by more than 10 %.
+
+Checked on a phone-like test photo (portrait, stored sideways with an EXIF
+"rotate 90°" flag, 26 mm equivalent): the route read 44.4° across, worked on the
+picture upright (900 × 1600), and the splats span exactly 44.4° at aspect 0.5625.
+The same picture made earlier with 65° (`birch_mire_depth`) is about 1.6 × too
+wide. The rotation fix came with it: PIL does not apply an EXIF orientation,
+so a phone's portrait JPEG used to be processed sideways; `depth_splat.py` and
+`make_sample.py` now turn it upright first, and the glTF export redraws every
+JPEG upright so Blender cannot show it sideways.
+
+The uploaded Everest photo says 85 mm on a Canon EOS 350D — about 15° across on
+that camera — but gives no 35 mm equivalent, so the route still assumes 65°
+there and the panel says the true field of view is unknown rather than guess
+the sensor.
+
+A scene made here reads the file on demand (`GET /api/source/<name>`), and
+new captures and photo scenes record it as `source_meta` in `capture.json`. It
+stays on the machine — coordinates can be copied, not sent to a map — and
+`make_sample.py` drops the location from a sample unless `--keep-location`:
+GPS, time and device together are personal data.
+
+### Hiding the explanations
+
+The **`?`** at the foot of the navigation column is the DL tools' density
+switch, as in DL-TerrainMapper: it hides the explanatory text (`.why`) once it
+has been read, and is **on by default** — the explanations start hidden, and
+the choice is remembered in this browser. Warnings (face blurring, the two
+honest limits of the terrain model, the unrolled strip's deformation) and live
+state (scale, detail, save results, job progress) are plain `.meta` and always
+stay: hiding them would lose what a panel exists to say.
+
+### Colour by viewing angle
+
+**Display → Colour by viewing angle** switches a trained scene's spherical-
+harmonic colour off (Spark's `maxSh = 0`): every splat keeps its base colour
+from every side. It is there to check a stray tint — if the tint goes, it was
+the extrapolated colour of a direction the camera never looked from; sheen and
+reflections go too. The choice outlives a scene load and is saved in the
+`.dlscene`. On IMG_1988 from camera 228 it changes about 9 % of the pixels. It
+is disabled, and says why, on a scene with one colour per splat (a photo scene,
+a plain point cloud).
 
 ### Photo view
 
@@ -686,9 +792,17 @@ progress card and the same queue as a video capture, just three stages instead
 of five. It needs neither COLMAP nor Brush, only the venv, so it is the one
 route that works without the multi-gigabyte `bin\` install.
 
-Because the depth is metric, a scene made this way **opens already scaled**:
-the viewer reads `metric: true` from its `capture.json` and applies *Scene is
-already in metres* for you, so the measurement tools work immediately.
+**Its scale is an estimate, and is not applied for you** (since 2026-09-24).
+The depth model returns metres, but on IMG_1779 — a capture calibrated from a
+measured dimension — it put every frame 5–12× too deep (Base median 9.1×;
+`output\research\DEPTH SMALL VS BASE - RESULTS - 002.md`). So a photo scene
+opens uncalibrated, and *Measure → Scale* offers **Use the depth estimate**.
+If used, every figure reads "≈ … m est." with two significant digits — on
+screen, in the lists and in stills — and the badge says "estimated"; the flag
+travels in the `.dlscene` file. Calibrating from a known distance replaces it
+with a real scale. A video capture whose `capture.json` records a
+`scale_m_per_unit` measured on site is still applied automatically: that one
+was measured.
 
 From the command line it is the same tool:
 
@@ -703,9 +817,9 @@ impressions, historical photographs and design context. Not a survey.
 
 It uses **Depth Anything V2 Metric** (outdoor fine-tune by default,
 `--scene indoor` for rooms), which returns **metres** rather than relative
-depth — so the scene opens already scaled and works with the measurement tools.
-Most depth models return arbitrary scale *and* offset, which makes measuring
-meaningless; that is why this one was chosen.
+depth. Most depth models return arbitrary scale *and* offset, so this one keeps
+a scene in plausible proportion — but its metres are an estimate (above), not a
+measurement.
 
 Three things separate a crisp result from soup, and all three are implemented:
 
@@ -803,6 +917,71 @@ An **absolute ground-truth** test — film something of known size, run the
 pipeline, then calibrate on one length in the viewer and measure another. That
 is the test that actually matters for survey-grade use, and it needs a physical
 capture with a known dimension in shot.
+
+## A photo scene in Blender (glTF)
+
+*Export → For Blender* on a single-photo scene writes one **`.glb`** that plain
+Blender imports (*File → Import → glTF 2.0*) — no add-on, no Blender code in
+this repository (anything that drives Blender imports bpy and is GPL; glTF is
+an open format Blender reads natively). It is built in the browser by
+`static/gltf.js`, so it works for samples and without the generator.
+
+It holds three objects:
+
+- **Photo camera** at the origin, with the photo's field of view and aspect —
+  exact, because the scene was unprojected from this camera.
+- **Photo surface** — not the splats: Blender does not draw a mesh of bare
+  points in object mode. Every splat of a photo scene came from one pixel of a
+  stride-2 grid, so each is mapped back to its cell, the grid is meshed, and
+  the photograph is its texture. **Fill the gaps** (default, since 2026-09-25):
+  every empty cell — a splat dropped at a depth jump — takes the mean depth
+  around it, spreading inward from each hole's edge, and every quad is meshed,
+  so the surface is **one sheet with no holes**; from the side, faces stretch
+  across each depth jump. Off, triangles whose corner depths differ by more than
+  8 % are left out and the gaps stay.
+- **Photo backdrop** — only with the gaps kept: the photograph on a plane
+  filling the camera's view just behind the farthest surface.
+
+**With the splat (.zip)** adds the splat itself as a standard 3DGS `.ply` for a
+Gaussian-splat importer (Capture Walk imports one; Blender itself does not),
+plus a README. It is written in **Blender's own axes**: the glTF import turns
+Y-up into Z-up, which composed with the surface's half turn maps the scene's
+(x, y, z) to (x, z, −y) — a −90° turn about X, applied to every splat's
+position and rotation. An importer that keeps a `.ply`'s coordinates as they
+are therefore puts the splat exactly where the camera and surface are. Written
+from Spark's packed splats (half-float positions, 8-bit colour); a photo scene
+has one colour per splat, so nothing view-dependent is lost.
+
+**Verified 2026-09-25** on `birch_mire_depth` (the 1080 × 1920 frame, 450 × 800
+grid): 75,958 gap cells filled, 0 left; 717,502 triangles, 16.8 MB. In
+**Blender 5.2**, factory settings: the surface is **one piece** whose only open
+edges are its outer rim (2,496 = the rim of a 450 × 800 grid); all 284,042
+splat centres, imported with Blender's own PLY importer, lie **on** the surface
+(distance 0.0 at the median, 99th percentile and maximum); rendered from the
+camera the image correlates **0.997** with the photograph. The splat
+transform was also checked on 200 random splats against the quarter turn:
+position and rotation errors below 10⁻⁶.
+
+Rebuilding the grid needs the photograph: for the texture, and for the size the
+depth was worked at (in `capture.json` since 2026-09-24, otherwise derived from
+the photo and `max_side` exactly as `depth_splat.py` did). Spark holds splat
+positions as half floats — too coarse to find the grid by clustering — but
+rounding against the known spacing stays under half a cell. A scene made here
+finds its photo under `input\`; a sample ships `photo.jpg` (`make_sample.py`).
+
+**Verified 2026-09-24** on the 1087 × 817 screenshot scene: all 217,661 splats
+placed on the 544 × 409 grid with **no collisions**, from the PLY and from the
+compressed sample alike; 423,108 triangles, 9.9–11.7 MB. **Blender 5.2**,
+factory settings: three objects, camera vertical field of view 51.17° = the
+photo's. Rendered from that camera at 1087 × 817, the image correlates **0.994**
+with the photograph (0.24 when shifted 3 %). Two things Blender does not take
+from the file: the render **resolution** (it stays at 1920 × 1080; the photo's
+size is on the camera as custom properties, and the export's message says it),
+and **colour** — the default view transform, AgX, reshapes the photo's
+colours (mean difference 17.9 / 255); with *Standard* it is 7.2.
+
+Scale: metres at the scale set in the viewer; uncalibrated, the depth model's
+**estimate**, and the file's `asset.extras.note` says which.
 
 ## Known gaps
 
