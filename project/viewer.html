@@ -108,6 +108,19 @@
       <!-- No synthetic scene is offered here (Marc, 2026-09-24/25). The
            acceptance test loads data/calibration.ply directly. -->
 
+      <!-- The website (and a viewer started without the .venv) has no capture
+           backend, so "Make a scene" is hidden there -- and a visitor looking
+           for the video or photo drop found nothing that said why. This says
+           it, in place of the panel. Shown only when /api/health does not
+           answer; it is not a .why, so hiding explanations keeps it. -->
+      <div id="make-local" hidden>
+        <strong>Making a scene from a video or a photo</strong>
+        <span>runs on your own computer, not in the browser. It currently needs
+          Windows with an NVIDIA graphics card, and a local set-up.</span>
+        <a href="https://github.com/DLandscapes/dl-splat-generator#making-scenes--the-generator"
+           target="_blank" rel="noopener">How to set it up &rarr;</a>
+      </div>
+
       <!-- Only shown when a capture backend is present; the viewer works without one. -->
       <details class="sub" id="panel-make" hidden>
         <summary class="subhead">Make a scene</summary>

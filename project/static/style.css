@@ -142,6 +142,16 @@ body {
 }
 #drop-hint .or { font-size: .72rem; }
 
+/* where "Make a scene" would be, when there is no local generator */
+#make-local {
+  display: flex; flex-direction: column; gap: 4px;
+  border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px;
+}
+#make-local[hidden] { display: none; }
+#make-local strong { font-size: .84rem; }
+#make-local span { color: var(--ink-soft); font-size: .78rem; line-height: 1.4; }
+#make-local a { color: var(--ink); font-size: .78rem; }
+
 #scene-card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
 .row-between { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 #scene-name { font-size: .9rem; word-break: break-all; }

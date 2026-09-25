@@ -432,20 +432,24 @@ let activeJob = null;
 async function detectBackend() {
   try {
     const res = await fetch("/api/health");
-    if (!res.ok) return;
-    const info = await res.json();
-    if (!info?.backend) return;
-    hasBackend = true;
-    $("panel-make").hidden = false;
-    syncGroups();
-    wireMakePanel();
-    refreshBlenderPanel();      // a scene may already be open on a reload
-    refreshMeshPanel();
-    wireJobCard();
-    resumeJob();
+    const info = res.ok ? await res.json() : null;
+    if (info?.backend) {
+      hasBackend = true;
+      $("panel-make").hidden = false;
+      syncGroups();
+      wireMakePanel();
+      refreshBlenderPanel();      // a scene may already be open on a reload
+      refreshMeshPanel();
+      wireJobCard();
+      resumeJob();
+      return;
+    }
   } catch {
     // no backend: viewer-only, panel stays hidden
   }
+  // Viewer only (the website, or started without the .venv): say where the
+  // video and photo drop went instead of leaving a visitor to look for it.
+  $("make-local").hidden = false;
 }
 
 /* A capture lives in the server, so it survives a page reload: attach to
@@ -1458,14 +1462,17 @@ window.addEventListener("drop", (e) => {
   else if (/\.(mov|mp4|m4v|avi|mkv)$/.test(lower)) {
     // a video is not something to view, it is something to turn into a scene
     if ($("panel-make").hidden) {
-      fail(new Error("Video needs the capture backend — start the app with "
-        + "the .venv interpreter."));
+      fail(new Error("Making a scene from a video runs on your own computer, "
+        + "not in the browser — see Import for how to set it up."));
     } else {
       $("sec-import").open = true;
       $("panel-make").open = true;
       $("panel-make").scrollIntoView({ behavior: "smooth", block: "nearest" });
       startCapture(f);
     }
+  } else if (/\.(jpe?g|png|heic|webp|tiff?)$/.test(lower) && $("panel-make").hidden) {
+    fail(new Error("Making a scene from a photo runs on your own computer, "
+      + "not in the browser — see Import for how to set it up."));
   } else fail(new Error(`${f.name} is not a splat, scene or video file.`));
 });
 

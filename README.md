@@ -26,7 +26,7 @@ published.
 
 ### In your browser — nothing to install
 
-**https://digital-landscapes.com/splat-generator-app/v1/**
+**https://digital-landscapes.com/splat-generator-app/v3/**
 
 Open it in a current Chrome, Edge, Firefox or Safari and drop a splat file onto
 the window. The file is read by your browser on your own machine; it is not
