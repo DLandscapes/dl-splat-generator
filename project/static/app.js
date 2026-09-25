@@ -1515,9 +1515,8 @@ $("blur").oninput = (e) => {
  * hidden again. */
 function setTerse(terse) {
   document.body.classList.toggle("terse", terse);
-  const b = $("explainToggle");
-  b.setAttribute("aria-pressed", String(terse));
-  b.title = terse ? "Show the explanations" : "Hide the explanations";
+  // the button says what it will DO, and never looks switched on
+  $("explainToggle").textContent = terse ? "Show explanations" : "Hide explanations";
   try { localStorage.setItem("dlsg.terse", terse ? "1" : "0"); } catch { /* not offered */ }
 }
 $("explainToggle").onclick = () => setTerse(!document.body.classList.contains("terse"));
@@ -1683,7 +1682,7 @@ function syncPlanScale() {
 function placePlan() {
   const g = $("gizmo"), el = $("plan");
   if (el.hidden) return;
-  const top = g.offsetTop + g.offsetHeight + 8;
+  const top = g.offsetTop + g.offsetHeight + 4;      // the column's own 4 px rhythm
   if (el.style.top !== `${top}px`) el.style.top = `${top}px`;
 }
 $("plan-toggle").onchange = (e) => { display.plan = e.target.checked; rebuildPlan(); };

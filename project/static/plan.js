@@ -21,7 +21,7 @@
  */
 import * as THREE from "three";
 
-const SIZE = 200;              // CSS px, square
+const SIZE = 170;              // CSS px, square: fills the 184 px column inside its padding
 const GRID = 100;              // raster cells per side
 const MAX_SAMPLES = 400_000;   // splats read for the raster; more adds nothing at 100 x 100
 

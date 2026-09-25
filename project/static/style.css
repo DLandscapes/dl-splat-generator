@@ -345,7 +345,10 @@ select {
 #gizmo {
   position: absolute; top: 10px; right: 10px; z-index: 5;
   display: flex; flex-direction: column; align-items: stretch; gap: 4px;
-  user-select: none; width: 122px;
+  /* ONE COLUMN WIDTH for the navigation and the plan under it (Marc,
+     2026-09-25): 122 px beside a 200 px plan left two ragged edges. 184 px
+     holds the plan's 170 px picture with its padding and border. */
+  user-select: none; width: 184px;
 }
 #gizmo-axes {
   width: 62px; height: 62px; align-self: center;
@@ -353,12 +356,14 @@ select {
   border-radius: 50%;
 }
 #gizmo-axes line { stroke-width: 3; stroke-linecap: round; }
-#ax-x { stroke: #b4453f; } #ax-y { stroke: #4a7c4e; } #ax-z { stroke: #3f6ab4; }
+/* BLACK AND WHITE, not red-green-blue (Marc, 2026-09-25): one ink for all
+   three, told apart by their letters; the axis pointing away stays faded. */
+#ax-x, #ax-y, #ax-z { stroke: var(--ink); }
 #gizmo-axes text {
   font-family: var(--font-head); font-size: 15px; font-weight: 700;
   text-anchor: middle; dominant-baseline: middle;
 }
-#ax-x-l { fill: #b4453f; } #ax-y-l { fill: #4a7c4e; } #ax-z-l { fill: #3f6ab4; }
+#ax-x-l, #ax-y-l, #ax-z-l { fill: var(--ink); }
 #gizmo-views { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
 #gizmo button {
   font-family: var(--font-head); font-size: .66rem; letter-spacing: .04em;
@@ -472,7 +477,7 @@ select {
 /* The plan, under the navigation column (its top is set from the column's
    height each frame, which grows when the frame slider shows). */
 #plan {
-  position: absolute; right: 10px; top: 320px; z-index: 4; width: 200px;
+  position: absolute; right: 10px; top: 320px; z-index: 4; width: 184px;
   padding: 5px 6px 6px; border-radius: 5px;
   background: var(--glass-soft); border: 1px solid var(--line);
 }
@@ -488,8 +493,11 @@ select {
    STATE STAY. Only .why is hidden; a .meta without it is a warning or live
    output, and hiding it would lose what the panel exists to say. */
 body.terse .why { display: none; }
-#explainToggle { font-family: var(--font-head); }
-#gizmo #explainToggle[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--sheet); }
+/* LEFT-aligned: in a narrow window the menu spans nearly the full width and
+   the navigation column sits over its right-hand side -- a right-aligned
+   switch was hidden under the view buttons (measured at 683 px wide). */
+.explain-row { display: flex; justify-content: flex-start; margin: -4px 0 -2px; }
+#explainToggle { font-size: .74rem; }
 
 /* The source's facts: a two-column list, labels in the soft ink. */
 .facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0 0 6px; font-size: .78rem; }

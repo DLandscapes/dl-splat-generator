@@ -48,6 +48,15 @@
 
   <div id="menu-main">
 
+  <!-- The DL tools' density switch (as DL-TerrainMapper's): it hides the
+       EXPLANATIONS (.why) once they have been read; warnings and live state
+       always stay. A plain text button saying what it will do -- Marc
+       (2026-09-25): a bare "?" in the navigation column read as help and,
+       lit while explanations were hidden, as an active view mode. -->
+  <div class="explain-row">
+    <button id="explainToggle" class="link">Show explanations</button>
+  </div>
+
   <!-- The sections run the way the work runs: import, then look, then measure,
        then cut, then the terrain, then out. Each is a native <details>, closed
        by default, so the window is short until you open the part you want. -->
@@ -96,9 +105,8 @@
         <div id="samples-grid"></div>
       </div>
 
-      <!-- The synthetic test scenes (data/landform.ply, data/calibration.ply)
-           are NOT offered here: Marc took them off the menu on 2026-09-24. The
-           acceptance test still loads calibration.ply directly. -->
+      <!-- No synthetic scene is offered here (Marc, 2026-09-24/25). The
+           acceptance test loads data/calibration.ply directly. -->
 
       <!-- Only shown when a capture backend is present; the viewer works without one. -->
       <details class="sub" id="panel-make" hidden>
@@ -570,12 +578,6 @@
     <!-- Stand where the camera stood. Only useful for a scene made here, so it
          disables itself for anything else. -->
     <button id="gizmo-camera" class="wide" title="Stand where the camera stood">Camera</button>
-    <!-- The DL tools' density switch (as DL-TerrainMapper's #explainToggle):
-         it hides the EXPLANATIONS (.why) once they have been read. Warnings
-         and live state (.meta without .why) always stay -- hiding those would
-         lose what a panel exists to say. Out here, not in the window's header,
-         because it governs the whole window and the header is a drag handle. -->
-    <button id="explainToggle" class="wide" title="Hide the explanations">?</button>
     <div id="gizmo-frames" hidden>
       <input type="range" id="gizmo-frame" min="0" max="0" step="1" value="0"
              title="Which frame of the capture to stand at">

@@ -13,9 +13,13 @@ measured. For what the tool is and how to start, see the
 Named `DL-3DGS` until 2026-09-06; renamed to match the other Digital Landscapes
 tools — `DL-TerrainMapper`, `DL-TerrainSlicer`, `DL-TerrainDiversity`.
 
-The **viewer half is entirely client-side** — no server logic, no build step, no
-network requests. Python appears only in the generator half, where local GPU
-training genuinely needs it.
+The **viewer half is entirely client-side** — no server logic, no build step,
+and nothing you open is uploaded: it only requests its own files (the optional
+sample list and the generator's health check among them, which simply 404 on a
+static host). Python appears only in the generator half, where local GPU
+training genuinely needs it. The repository's root `index.html` forwards to
+`project/viewer.html`, so a static host serving the repository — GitHub Pages,
+or digital-landscapes.com/splat-generator-app/vN/ — opens the viewer.
 
 (An **Export web scene** bundle — the scene, its splat as SPZ and a read-only
 shell for a static host, embeddable by iframe — was removed on 2026-09-24 at
@@ -87,7 +91,7 @@ tools/
   inspect_video.py     frame count, fps and rotation of a clip
   inspect_ply.mjs      layout, SH degree and extent of a splat file
   to_spz.mjs           PLY -> SPZ
-  make_demo.mjs        generates the bundled test scenes
+  make_demo.mjs        generates the calibration test scene
   make_sample.py       turns a scene made here into a sample (see below)
   source_meta.py       what a source photo/video says about itself
   acceptance.html      measurement acceptance test (see below)
@@ -95,7 +99,6 @@ tools/
   sparse_model_test.py regression test for the sparse-model choice
   pose_regression.py   camera-path drift check (Tier 2)
 data/
-  landform.ply         a laser-cut contour model, 106,726 splats (test scene)
   calibration.ply      markers at exactly known separations, 50,268 splats
   calibration.markers.json   ground truth for the acceptance test
   samples/             real scenes offered on the Import panel, when there are
@@ -104,11 +107,13 @@ reference/
   v1-single-file.html  the original hand-written WebGL2 renderer
 ```
 
-Regenerate the test scenes with `node tools/make_demo.mjs` (deterministic —
-the same bytes every run). The contour landform replaced a synthetic island on
-2026-09-24; the calibration scene starts its random stream from the state the
-island left behind, so `calibration.ply` is still byte-identical to the file
-the acceptance test was built on (checked by SHA-256).
+Regenerate the calibration scene with `node tools/make_demo.mjs`
+(deterministic — the same bytes every run). A synthetic island (until
+2026-09-24) and a contour landform (until 2026-09-25) were generated beside
+it and are gone, at Marc's request; the calibration scene starts its random
+stream from the state the island left behind, so `calibration.ply` is still
+byte-identical to the file the acceptance test was built on (checked by
+SHA-256 after each removal).
 
 ## Samples
 
@@ -139,12 +144,11 @@ costs visible quality — on a dense 2 M-splat woodland at 400 k, 37–40 % of t
 pixels changed and the foreground went muddy; ranking by projected size
 instead was no better overall (28 % and 60 % at the same two cameras).
 
-**The synthetic test scenes are not on the menu** (Marc, 2026-09-24): the
-contour landform (0.2 m greyboard sheets on a 12 × 9 m base board) and the
-acceptance test's scene of markers at known distances. `calibration.ply` is
-loaded directly by `tools/acceptance.html`; either file still opens by dropping
-it onto the viewer. The markers prove the measuring tools, not a capture: they
-calibrate nothing.
+**No synthetic scene is on the menu** (Marc, 2026-09-24/25). The acceptance
+test's scene of markers at known distances, `calibration.ply`, is loaded
+directly by `tools/acceptance.html` and still opens by dropping it onto the
+viewer. The markers prove the measuring tools, not a capture: they calibrate
+nothing.
 
 ## Navigating
 
@@ -278,10 +282,12 @@ GPS, time and device together are personal data.
 
 ### Hiding the explanations
 
-The **`?`** at the foot of the navigation column is the DL tools' density
-switch, as in DL-TerrainMapper: it hides the explanatory text (`.why`) once it
-has been read, and is **on by default** — the explanations start hidden, and
-the choice is remembered in this browser. Warnings (face blurring, the two
+**Show / Hide explanations**, a text button at the top of the menu, is the
+DL tools' density switch, as in DL-TerrainMapper: it hides the explanatory
+text (`.why`) once it has been read. The explanations start **hidden**, and the
+choice is remembered in this browser. It says what it will do and is never
+drawn switched on — a bare `?` in the navigation column (its first form, one
+day) read as help, and lit while explanations were hidden, as a view mode. Warnings (face blurring, the two
 honest limits of the terrain model, the unrolled strip's deformation) and live
 state (scale, detail, save results, job progress) are plain `.meta` and always
 stay: hiding them would lose what a panel exists to say.

@@ -20,9 +20,18 @@ the terrain models this tool writes into laser sheets,
 
 **What you need:** a splat scene — `.ply`, `.spz`, `.splat`, `.ksplat` or `.sog`
 — from a phone scanning app, from Postshot, or from this tool's own generator.
-A plain point-cloud `.ply` opens too. You can try everything without your own
-data: the **Samples** on the Import panel are real scenes made with this tool —
-one from a walked video, one from a single photograph.
+A plain point-cloud `.ply` opens too. Sample scenes — one from a walked video,
+one from a single photograph — will appear on the Import panel once they are
+published.
+
+### In your browser — nothing to install
+
+**https://digital-landscapes.com/splat-generator-app/v1/**
+
+Open it in a current Chrome, Edge, Firefox or Safari and drop a splat file onto
+the window. The file is read by your browser on your own machine; it is not
+uploaded anywhere. The viewer works the same way here as when run locally; the
+generator (making scenes from video) is only available when run locally.
 
 ### On your own machine
 
@@ -37,9 +46,10 @@ not load the app's modules from a `file://` path.
 
 ## Your files never leave your computer
 
-The viewer makes **no network requests**. Its libraries and fonts are part of
-this repository, a scene you open is read in your browser, and a still or a
-scene file is written on your own machine. The generator runs locally too; the
+**Nothing you open is uploaded.** A scene you open is read in your browser, and
+a still, a scene file or a Blender export is written on your own machine. The
+viewer's libraries and fonts are part of this repository; the only requests it
+makes are for its own files — and, when run locally, to its own generator. The generator runs locally too; the
 one thing it downloads is the depth model, once, the first time you make a
 scene from a single photograph.
 

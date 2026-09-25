@@ -1,15 +1,17 @@
-// Generates the bundled test scenes, in the standard INRIA 3DGS .ply layout
+// Generates the bundled calibration scene, in the standard INRIA 3DGS .ply layout
 // (binary_little_endian, float properties):
 //
-//   data/landform.ply     a laser-cut contour model of a landform: greyboard
-//                         sheets on a base board, metric (see buildLandform)
 //   data/calibration.ply  markers at exactly known separations, plus a rectangle
 //                         of known area, so measurement accuracy is testable
 //                         rather than eyeballed
 //   data/calibration.markers.json  ground truth for the above
 //
-// Both are authored in the COLMAP-style Y-down convention that real 3DGS
-// captures use, so the viewer's default "flip up-axis" renders them upright.
+// (A synthetic island, then a contour landform, were generated here too; both
+// were removed -- the island 2026-09-24, the landform 2026-09-25, at Marc's
+// request. They are in the git history.)
+//
+// Authored in the COLMAP-style Y-down convention that real 3DGS
+// captures use, so the viewer's default "flip up-axis" renders it upright.
 //
 // Run: node make_demo.mjs [output folder]     (default: ../data/)
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -34,97 +36,6 @@ function rand() {
 /** Push a splat given in world (Y-up) coordinates; stored Y-down. */
 function push(list, { x, y, z, r, g, b, a = 0.95, sx, sy, sz }) {
   list.push({ x, y: -y, z: -z, r, g, b, a, sx, sy, sz, qw: 1, qx: 0, qy: 0, qz: 0 });
-}
-
-/* --------------------------------------------------------- contour landform */
-
-// A laser-cut contour model, as DL-TerrainSlicer cuts them: a landform stacked
-// from sheets of greyboard on a white base board, each sheet a flat terrace
-// with a dark, laser-burnt cut edge. It replaced a synthetic island on
-// 2026-09-24: the island (sea, sand, trees, clouds) looked like a game, and
-// this is the house's own language -- the thing the tool's terrain models end
-// up as. Metric: 12 x 9 m, 0.2 m sheets, 1 unit = 1 m.
-//
-// It has its OWN random stream, so it can change without moving a single byte
-// of calibration.ply -- which the acceptance test depends on.
-
-let landSeed = 20260924;
-function landRand() {
-  landSeed = (landSeed * 1664525 + 1013904223) >>> 0;
-  return landSeed / 4294967296;
-}
-
-const SHEET = 0.2;                         // sheet thickness, m
-const PLATE = { x0: -6, x1: 6, z0: -4.5, z1: 4.5 };
-const STEP = 0.045;                        // splat spacing on the terraces, m
-
-const bump = (x, z, cx, cz, sx, sz) =>
-  Math.exp(-(((x - cx) ** 2) / (2 * sx * sx) + ((z - cz) ** 2) / (2 * sz * sz)));
-
-/** Ground height before it is cut into sheets: two summits, a saddle between
- *  them and a shallow valley running out to the front edge. */
-function landHeight(x, z) {
-  const h = 2.5 * bump(x, z, -1.7, -0.5, 2.3, 1.9)
-          + 1.5 * bump(x, z, 2.9, 1.3, 1.6, 1.4)
-          + 0.5 * bump(x, z, 0.6, 0.4, 1.2, 2.6)
-          - 0.45 * bump(x, z, 0.8, -3.2, 0.9, 2.4)
-          + 0.12 * Math.sin(x * 1.3 + 0.4) * Math.cos(z * 1.1 - 0.2);
-  // fade to the base board before the plate's edge, as a cut model does
-  const edge = Math.min(x - PLATE.x0, PLATE.x1 - x, z - PLATE.z0, PLATE.z1 - z);
-  return Math.max(0, h * Math.min(1, Math.max(0, (edge - 0.3) / 1.2)));
-}
-
-function buildLandform() {
-  const out = [];
-  const nx = Math.round((PLATE.x1 - PLATE.x0) / STEP);
-  const nz = Math.round((PLATE.z1 - PLATE.z0) / STEP);
-  const level = (i, j) => Math.floor(landHeight(PLATE.x0 + (i + 0.5) * STEP,
-                                                PLATE.z0 + (j + 0.5) * STEP) / SHEET);
-  const levels = [];
-  for (let i = 0; i < nx; i++) {
-    levels.push([]);
-    for (let j = 0; j < nz; j++) levels[i].push(level(i, j));
-  }
-  const at = (i, j) => (i < 0 || j < 0 || i >= nx || j >= nz ? -1 : levels[i][j]);
-
-  // board tones: a white base board, then greyboard alternating very slightly
-  // sheet to sheet, the way two batches of board never quite match
-  const tone = (k) => (k === 0 ? [0.88, 0.87, 0.84]
-    : k % 2 ? [0.70, 0.68, 0.64] : [0.735, 0.715, 0.675]);
-  const EDGE = [0.30, 0.28, 0.26];         // the laser-burnt cut edge
-
-  for (let i = 0; i < nx; i++) {
-    for (let j = 0; j < nz; j++) {
-      const k = levels[i][j];
-      const x = PLATE.x0 + (i + 0.5) * STEP, z = PLATE.z0 + (j + 0.5) * STEP;
-      const [r, g, b] = tone(k);
-      const n = (landRand() - 0.5) * 0.03;  // board fibre
-      push(out, {
-        x: x + (landRand() - 0.5) * STEP * 0.3, y: k * SHEET, z: z + (landRand() - 0.5) * STEP * 0.3,
-        r: r + n, g: g + n, b: b + n, a: 0.97,
-        sx: STEP * 0.78, sy: 0.004, sz: STEP * 0.78,
-      });
-      // a cut edge wherever a neighbour sits lower: a vertical strip of splats
-      // on the boundary, from the neighbour's sheet up to this one's
-      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const kn = at(i + di, j + dj);
-        if (kn >= k) continue;
-        const bottom = kn < 0 ? -SHEET : kn * SHEET, top = k * SHEET;
-        const steps = Math.max(1, Math.ceil((top - bottom) / 0.03));
-        for (let s = 0; s < steps; s++) {
-          const y = bottom + (s + 0.5) * (top - bottom) / steps;
-          const e = (landRand() - 0.5) * 0.03;
-          push(out, {
-            x: x + di * STEP * 0.5, y, z: z + dj * STEP * 0.5,
-            r: EDGE[0] + e, g: EDGE[1] + e, b: EDGE[2] + e, a: 0.97,
-            sx: di ? 0.004 : STEP * 0.62, sy: (top - bottom) / steps * 0.62,
-            sz: dj ? 0.004 : STEP * 0.62,
-          });
-        }
-      }
-    }
-  }
-  return out;
 }
 
 /* -------------------------------------------------------- calibration scene */
@@ -252,12 +163,8 @@ function writePly(splats, url) {
   return headerBytes.length + body.length;
 }
 
-const land = buildLandform();
-let bytes = writePly(land, new URL("landform.ply", OUT));
-console.log(`landform.ply     ${land.length} splats, ${(bytes / 1e6).toFixed(2)} MB`);
-
 const calib = buildCalibration();
-bytes = writePly(calib, new URL("calibration.ply", OUT));
+const bytes = writePly(calib, new URL("calibration.ply", OUT));
 console.log(`calibration.ply  ${calib.length} splats, ${(bytes / 1e6).toFixed(2)} MB`);
 
 writeFileSync(fileURLToPath(new URL("calibration.markers.json", OUT)),

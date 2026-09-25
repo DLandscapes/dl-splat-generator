@@ -143,8 +143,8 @@ DATA
 ===============================================================================
 
 This repository contains NO captured site data, except the samples named in
-project/data/samples/samples.json, if any. The contour landform and the
-measuring test in project/data/ are synthesised by the tool itself
+project/data/samples/samples.json, if any. The measuring test scene in
+project/data/ is synthesised by the tool itself
 (project/tools/make_demo.mjs), and the pose references in
 project/tools/reference/ are camera positions only — numbers, no imagery.
 
