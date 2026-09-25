@@ -9,7 +9,7 @@ import { photoSceneGlb, splatPlyForBlender } from "./gltf.js";
 import { PlanView } from "./plan.js";
 
 const $ = (id) => document.getElementById(id);
-const BUILD = "2026-09-08";
+const BUILD = "2026-09-25";
 
 const viewer = new Viewer($("canvas"), $("overlay"));
 const tools = new Tools(viewer, $("overlay"));
@@ -138,7 +138,15 @@ function syncGroups() {
   for (const group of document.querySelectorAll("details.panel > .sec-body")) {
     const subs = [...group.children].filter((el) => el.matches("details.sub"));
     if (!subs.length) continue;                 // a flat section speaks for itself
-    group.parentElement.hidden = subs.every((el) => el.hidden);
+    // ⚠️ A section with content OF ITS OWN is never hidden with its folds --
+    // Import's drop area is the way in. On the website (no generator, no
+    // generated scenes, no samples) every Import fold is hidden, and the old
+    // rule hid Import itself: the page opened with an empty menu and nothing
+    // to drop onto (live, 2026-09-25, found by Marc before class). Locally a
+    // generator fold always showed, and until that morning the Test scenes
+    // fold did too, so it never surfaced.
+    const own = [...group.children].some((el) => !el.matches("details.sub") && !el.hidden);
+    group.parentElement.hidden = !own && subs.every((el) => el.hidden);
   }
   badge("b-import", generatedName ? generatedName : (sourceInfo ? sourceInfo.name : ""));
   badge("b-display", viewer.mesh ? `${tools.viewpoints.length || ""}` : "");
