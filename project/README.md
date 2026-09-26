@@ -175,13 +175,59 @@ tilted scene feel wrong rather than merely crooked. Measured on the walking clip
 below: with levelling off, the scene's true vertical lands anywhere between 4.6°
 left and 4.4° right of screen vertical as you swing around it.
 
-The capture cameras know which way was up — COLMAP's camera Y points down, so
-each frame carries an up vector, and their average is the best gravity estimate
-a solve offers. `cameras.json` version 2 records it, and the viewer orbits about
-that vertical instead of world +Y: the scene's vertical is then exactly vertical
-on screen at every orbit angle (measured 0.00° at seven angles). The checkbox
-sits in **Display**; it is disabled, and says why, for a scene with no capture
-cameras.
+**Which way is up — `static/level.js` (2026-09-26).** Until then the vertical
+was the MEAN of the capture cameras' up vectors (`cameras.json` v2). Right when
+the phone looks ahead; wrong when it looks down at the ground — a camera
+pitched 70° down has its up pointing nearly forward, and the ground stood on
+its edge (student capture A, filmed 73° down: **78° off**). Measured
+on six captures against each scan's dominant plane (scratch `up_analysis.py`):
+
+| capture | looks down | mean-up off | new method | corrected by |
+| --- | --- | --- | --- | --- |
+| student capture A | 72° | 78° | ground | 78° |
+| student capture B | 29° | 22–34° | ground | 30° |
+| IMG_1988 | 28° | 27° | ground | 28° |
+| IMG_1779 | 0.5° | 6° | held level, walk straight | 0.0° (keeps the path's 5 % fall) |
+| sample-netherlands | 9° | 9° | held level, walk straight | 0° |
+| IMG_8950_clean | 11° | 7° | held level | 12° |
+
+Two clues, chosen by how the phone was held:
+
+- **Held level** — a phone is held without tilting it sideways (0.5–2° rms on
+  every capture), so each frame's right vector is horizontal however far it
+  points down; the vertical is the direction most perpendicular to all of them
+  (smallest eigenvector of Σ r rᵀ). It **keeps a real slope**.
+- **Held level, walk straight** — a walk that never turns leaves the tilt ALONG
+  it open: "the path slopes" and "the phone pointed a little down" look alike.
+  The cameras' mean up with its sideways part removed: the phone held level on
+  average, which keeps the slope, off by the average pitch. (Briefly the rule
+  took the walk as horizontal instead — right × walk — which erased IMG_1779's
+  5 % fall by 4°; changed the same day, before it reached the terrain tool.)
+- **The ground** — the dominant plane of the scan (RANSAC over 20,000 splat
+  centres, refined by least squares through its inliers), used only if it holds
+  most of the scan and the cameras are above it. It **makes that plane level**.
+
+Filming **ahead** (cameras look under 20° down onto the plane): held level.
+Filming **down**: the ground — pointing down makes "held level" meaningless.
+About 0.1 s per scene. Seen from the side, both student captures now lie flat;
+with the mean-up they ran uphill / stood upright. Fallback: *Display → View →
+Level by three points on the ground*. A splat dropped in on its own has no
+cameras.json and so no levelling at all — open it from *Generated scenes*.
+**The terrain tool uses the same rule** (`tools/level.py`, the Python twin;
+`ground_dem.py` since 2026-09-26), so a terrain model and its scene agree on
+level. `dem.json` records it under `level` (method, how far the cameras looked
+down, the angle to the old mean-up) and adds a caveat: levelled to the GROUND →
+"read no grade off this model"; a straight walk → the grade along it is
+uncertain by the camera's average pitch, with the size of the alternative.
+Checked on copies (`test outputs\2026-09-26\terrain levelling\`): IMG_1779's
+corridor grade unchanged at **5.4 %** (0.62 m over 11.5 m; "horizontal walk"
+would differ by 4.1°); student capture A's terrain went from a 14.4-unit-tall wall to a
+1.9-unit bed (ground 91 %); Python and the viewer agree to 0.3°.
+
+The viewer orbits about that vertical instead of world +Y: the scene's vertical
+is then exactly vertical on screen at every orbit angle (measured 0.00° at seven
+angles). The checkbox sits in **Display**; it is disabled, and says why, for a
+scene with no capture cameras.
 
 Levelling is applied to the **orbit frame, never to the mesh**. Spark evaluates
 section-box SDFs in the mesh's own frame, and that only works because our single
@@ -456,6 +502,60 @@ which is SPZ's quantisation.
 
 Start the app with the **venv** interpreter and the sidebar gains a **Make a
 scene** panel: drop a video, trim it, pick a quality, watch the stages go by.
+
+### Which hardware does what — the route is chosen per machine
+
+`tools/hardware.py` (2026-09-26) asks the machine what it has — processor and
+threads, memory (on Windows the free *commit*, which is what an allocation
+really draws on), NVIDIA cards via `nvidia-smi`, every graphics adapter of any
+maker — and plans the **fastest route it allows**. The panel says it before a
+capture starts (`GET /api/hardware`), and `capture.json` records what ran
+(`hardware`). Premise (Marc): as fast as the hardware allows; on a weak
+machine slower is fine, failing is not.
+
+| step | NVIDIA card | without one |
+| --- | --- | --- |
+| COLMAP features, matching | on the card | on the **processor**, same result, slower |
+| COLMAP mapper | processor | processor |
+| Brush training | on the card | on **any** graphics adapter (DX12/Vulkan/Metal); none at all → stops before the solve, and says why |
+| dense mesh | on the card | **not possible** (COLMAP's stereo is CUDA-only) — the panel says so |
+| one photo → splats | CUDA if the installed torch has it | Apple MPS, else the processor |
+
+**The processor route's thread limit — measured.** COLMAP's default (every
+logical core) crashes this build's CPU feature extraction. On 80 phone frames
+(1080 × 1920), 24-thread Ryzen 9 5900X:
+
+| threads | crashed | time | peak memory |
+| --- | --- | --- | --- |
+| 4 | 0 of 1 | 68 s | 2.4 GB |
+| 8 | 0 of 3 | 38 s | 4.6 GB |
+| 12 | 0 of 5 | 31 s | 6.9 GB |
+| 16 | 1 of 5 | 27 s | 9.2 GB |
+| 24 (default) | 4 of 4 | — | — |
+
+The crashes are access violations at a fraction of the memory, so a build
+limit, not memory. The plan therefore uses **at most 12 threads**, fewer when
+memory is short (about 0.6 GB per thread for a phone frame, 2 GB kept free),
+and `run_adaptive()` in `capture.py` steps down if a step fails anyway: NVIDIA
+card → processor at the planned threads → half → … → one thread, with a clean
+database before an extraction retry. Only the last rung may end the capture.
+`--compute cpu` forces the processor route on a machine with an NVIDIA card,
+which is how it is tested here (`smoke_capture.py --compute cpu`).
+
+**Training resolution follows the machine.** Every quality used to train at
+a fixed 1200 px — a phone's 1080 × 1920 video at 675 × 1200, **40 % of its
+pixels**, which is much of why scenes looked soft. Now the plan takes the
+largest the graphics memory and free RAM allow (1920 on a 12 GB card with
+12 GB free, stepping down to 720), capped by the quality (draft 960).
+Explicit `--max-resolution` still wins. Those lower tiers are reasoned, not
+measured: no weak laptop was available.
+
+**Memory before training.** Brush held 2.4 GB training 103 views at 1200 px.
+Before it starts, the pipeline prints the free memory against an estimate and
+warns when it is short. Brush's out-of-memory retry now also recognises
+Rust's `TryReserveError`/`AllocError` — it did not, so student capture B
+(2026-09-26) and IMG_1779 (2026-09-24) each failed on the first attempt,
+both times on a machine whose memory was taken by other programs.
 
 ### Trimming the clip
 

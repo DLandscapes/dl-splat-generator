@@ -72,6 +72,9 @@ def main() -> int:
                     help="length of clip to cut from the source (default 8)")
     ap.add_argument("--stride", type=int, default=4)
     ap.add_argument("--steps", type=int, default=1000)
+    ap.add_argument("--compute", choices=["auto", "gpu", "cpu"], default="auto",
+                    help="cpu runs COLMAP's features and matching on the processor "
+                         "even with an NVIDIA card: the laptop route, testable here")
     args = ap.parse_args()
 
     source = Path(args.source).expanduser().resolve()
@@ -111,7 +114,7 @@ def main() -> int:
          "--work-root", str(work_root), "--out-root", str(out_root),
          "--stride", str(args.stride), "--steps", str(args.steps),
          "--max-resolution", "800", "--max-splats", "200000",
-         "--blur-drop", "20"],
+         "--blur-drop", "20", "--compute", args.compute],
         capture_output=True, text=True, encoding="utf-8", errors="replace")
     elapsed = time.time() - began
     for line in (proc.stdout or "").splitlines():

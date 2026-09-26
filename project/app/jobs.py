@@ -454,6 +454,10 @@ class JobRunner:
                 "--steps", str(preset["steps"]),
                 "--max-splats", str(preset["max_splats"]),
                 "--privacy", job.privacy,
+                # the training resolution follows the machine, capped by the
+                # preset (tools/hardware.py); features/matching pick the
+                # NVIDIA card or the processor by themselves
+                "--quality", job.quality,
             ]
             if job.trim_start > 0:
                 cmd += ["--start", f"{job.trim_start:.3f}"]

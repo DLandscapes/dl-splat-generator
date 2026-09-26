@@ -11,6 +11,7 @@ import {
   SplatEditSdfType, SplatEditRgbaBlendMode,
 } from "@sparkjsdev/spark";
 import { parsePlyHeader, isGaussianPly, parsePointCloud } from "./ply.js";
+import { estimateUp, upFromThreePoints } from "./level.js";
 
 const FOV_Y = 60;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
@@ -350,15 +351,57 @@ export class Viewer {
     const ups = (cams || []).filter((c) => Array.isArray(c.up) && c.up.length === 3);
     const up = new THREE.Vector3(0, 1, 0);
     this.upFromCameras = false;
+    this.upEstimate = null;
     if (ups.length) {
-      const sum = new THREE.Vector3();
-      for (const c of ups) sum.add(new THREE.Vector3().fromArray(c.up));
-      if (sum.lengthSq() > 1e-9) {
-        up.copy(sum.normalize());
+      // static/level.js: the phone held level when it filmed ahead, the
+      // ground when it filmed down at it -- the mean of the cameras' up
+      // vectors (all this did until 2026-09-26) stood a ground filmed from
+      // above on its edge
+      const est = ups.every((c) => Array.isArray(c.direction))
+        ? estimateUp(ups, this._samplePoints(20000)) : null;
+      if (est?.up) {
+        up.fromArray(est.up);
         this.upFromCameras = true;
+        this.upEstimate = est;
+      } else {
+        const sum = new THREE.Vector3();
+        for (const c of ups) sum.add(new THREE.Vector3().fromArray(c.up));
+        if (sum.lengthSq() > 1e-9) {
+          up.copy(sum.normalize());
+          this.upFromCameras = true;
+          this.upEstimate = { method: "mean up" };
+        }
       }
     }
     this.setSceneUp(up);
+  }
+
+  /** About `want` splat centres in world space (opaque ones), for fitting. */
+  _samplePoints(want) {
+    const mesh = this.mesh;
+    if (!mesh?.packedSplats) return [];
+    mesh.updateMatrixWorld(true);
+    const M = mesh.matrixWorld;
+    const n = this.splatCount || mesh.packedSplats.numSplats || 0;
+    const step = Math.max(1, Math.floor(n / want));
+    const out = [];
+    const p = new THREE.Vector3();
+    mesh.packedSplats.forEachSplat((i, c, s, q, opacity) => {
+      if (i % step || opacity < 0.5) return;
+      p.set(c.x, c.y, c.z).applyMatrix4(M);
+      out.push([p.x, p.y, p.z]);
+    });
+    return out;
+  }
+
+  /** Level by three picked points on level ground (world space). */
+  levelToPoints(a, b, c) {
+    const n = upFromThreePoints(a, b, c, this._up.toArray());
+    if (!n) return false;
+    this.upFromCameras = true;
+    this.upEstimate = { method: "three points" };
+    this.setSceneUp(n);
+    return true;
   }
 
   /** Point the orbit frame's vertical at `v`: a Vector3 or a [x,y,z] array. */
@@ -389,6 +432,8 @@ export class Viewer {
       level: this.level,
       tiltDeg: Math.round(this.upTiltDeg * 10) / 10,
       cameras: this.captureCameras ? this.captureCameras.length : 0,
+      method: this.upEstimate?.method || null,       // ground | held level | three points | mean up
+      lookDown: this.upEstimate?.lookDown ?? null,   // how far the cameras looked down at the ground
     };
   }
 

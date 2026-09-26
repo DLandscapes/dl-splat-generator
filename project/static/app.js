@@ -450,6 +450,7 @@ async function detectBackend() {
       hasBackend = true;
       $("panel-make").hidden = false;
       syncGroups();
+      showHardware();
       wireMakePanel();
       refreshBlenderPanel();      // a scene may already be open on a reload
       refreshMeshPanel();
@@ -463,6 +464,22 @@ async function detectBackend() {
   // Viewer only (the website, or started without the .venv): say where the
   // video and photo drop went instead of leaving a visitor to look for it.
   $("make-local").hidden = false;
+}
+
+/* Which route a capture takes on this computer (tools/hardware.py): said
+ * before it starts, so a slow run on a laptop is expected, not a surprise. */
+async function showHardware() {
+  try {
+    const h = await (await fetch("/api/hardware")).json();
+    const r = h.route;
+    const solve = r.colmap.gpu ? "on the NVIDIA graphics card"
+      : `on the processor (${r.colmap.threads} threads) — slower than with an NVIDIA card, same result`;
+    const train = r.train.ok ? `training up to ${r.train.max_resolution} px on ${r.train.gpu}`
+      : `⚠ ${r.train.why}`;
+    $("make-hardware").textContent = `This computer: ${h.gpu || "no graphics card found"}, `
+      + `${h.threads} threads, ${Math.round(h.memory.total_gb)} GB memory. Camera solve ${solve}; `
+      + `${train}.` + (r.notes.length ? ` ${r.notes.join(" ")}` : "");
+  } catch { /* an older backend without /api/hardware: say nothing */ }
 }
 
 /* A capture lives in the server, so it survives a page reload: attach to
@@ -1933,6 +1950,26 @@ $("north-shadow").onclick = () => {
 };
 const toolsPick = viewer.onPick;
 viewer.onPick = (p) => {
+  if (levelPicks) {
+    levelPicks.push(p.toArray());
+    if (levelPicks.length < 3) {
+      tools.onHint(`Point ${levelPicks.length + 1} of 3 on level ground.`);
+      return;
+    }
+    const [a, b, c] = levelPicks;
+    levelPicks = null;
+    tools.onHint(null);
+    if (!viewer.levelToPoints(a, b, c)) {
+      status("Those three points lie on a line — pick three spread apart.", 6000);
+    } else {
+      viewer.setLevel(true);
+      status("Levelled to the three points.", 4000);
+      rebuildPlan();
+      applySun();
+    }
+    syncLevelUi();
+    return;
+  }
   if (!shadowPicks) { toolsPick(p); return; }
   shadowPicks.push(p.toArray());
   if (shadowPicks.length === 1) {
@@ -2212,14 +2249,34 @@ function syncLevelUi() {
   const box = $("level-horizon");
   box.checked = info.level;
   box.disabled = !info.available;
+  const how = {
+    "ground": `Levelled to the ground: the camera looked about ${Math.round(info.lookDown ?? 0)}° `
+      + "down at it, so the ground it filmed is the reference — a slope in it is made level.",
+    "held level": "Levelled by the camera, held level sideways — a slope in the ground stays a slope.",
+    "held level, walk straight": "Levelled by the camera, held level sideways and — as the walk "
+      + "never turned — level on average along it: a slope along the path stays, give or take "
+      + "how far the phone pointed up or down.",
+    "three points": "Levelled to the three points you clicked.",
+    "mean up": "Levelled by the capture cameras' mean up direction.",
+  }[info.method] || "The capture cameras say which way is up.";
   $("level-note").textContent = info.available
-    ? (info.tiltDeg >= 0.2
-        ? `This scene sits ${info.tiltDeg}° off level; the capture cameras say `
-          + "which way is up."
-        : "This scene is already level.")
-    : "No capture cameras with an up direction, so there is nothing to level "
-      + "against — orbiting uses the file's own vertical.";
+    ? (info.tiltDeg >= 0.2 ? `This scene sits ${info.tiltDeg}° off its file's axes. ${how}`
+        : `This scene is already level. ${how}`)
+    : "No capture cameras came with this scene, so there is nothing to level "
+      + "against — orbiting uses the file's own vertical. Level it by three points "
+      + "on the ground instead.";
+  $("level-points").textContent = levelPicks ? "Cancel" : "Level by three points on the ground";
 }
+
+/* The manual fallback: three clicks on ground that should be level. */
+let levelPicks = null;
+$("level-points").onclick = () => {
+  if (levelPicks) { levelPicks = null; tools.onHint(null); syncLevelUi(); return; }
+  if (shadowPicks) endShadowPick();
+  levelPicks = [];
+  tools.onHint("Click three points on ground that should be level, spread apart.");
+  syncLevelUi();
+};
 
 viewer.onWalk = (i, total, running) => {
   const cam = viewer.captureCameras?.[i] || {};

@@ -98,9 +98,15 @@ body {
 #menu-chip[hidden] { display: none; }
 #sidebar header { display: flex; align-items: center; gap: 10px; }
 /* The mark is a solid black glyph on transparency, so on a dark panel it
-   would disappear. Inverting a monochrome mark gives the white version
-   rather than a recolour. */
-#logo { width: 34px; height: 34px; flex: none; filter: invert(1); }
+   would disappear. It is used as a MASK filled with the text colour, so it is
+   exactly the gray of the title beside it (Marc, 2026-09-25) -- inverting it
+   gave pure white, brighter than the text. */
+#logo {
+  display: block; width: 34px; height: 34px; flex: none;
+  background: var(--ink);
+  -webkit-mask: url("logo-dl.png") center / contain no-repeat;
+  mask: url("logo-dl.png") center / contain no-repeat;
+}
 /* The anchor wraps the logo tightly so the flex row measures exactly as it did
    before the link existed. line-height:0 keeps the inline-image descender gap
    from adding a stray pixel under the roundel. (Same rules as DL-TerrainSlicer

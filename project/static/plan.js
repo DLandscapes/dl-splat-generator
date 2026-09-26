@@ -171,9 +171,14 @@ export class PlanView {
     this.raster.width = this.raster.height = GRID;
     this.raster.getContext("2d").putImageData(img, 0, 0);
     this.path = path.length ? path : null;
+    // A splat dropped in on its own brings no cameras.json: nothing says which
+    // way is up, so "above" is only the file's own axis -- say that, rather
+    // than calling it a photo (a screenshot of student capture A's .spz,
+    // 2026-09-26: a video scene, labelled as a photo, lying on its side).
     this.note.textContent = this.north ? "From above · north-up"
       : cams ? "From above · walk heads up the page · not north-up"
-      : "From above · the photo looks up the page · not north-up";
+      : v.photoCamera ? "From above · the photo looks up the page · not north-up"
+      : "The file's own axes · no camera positions came with it, so not levelled";
   }
 
   /* ------------------------------------------------------------- drawing */

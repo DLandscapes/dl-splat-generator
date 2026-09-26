@@ -71,6 +71,28 @@ def health():
     }
 
 
+def _route(quality: str = "standard") -> dict:
+    sys.path.insert(0, str(PROJECT / "tools"))
+    import hardware
+    return hardware.plan(hardware.probe(), quality=quality)
+
+
+@app.get("/api/hardware")
+def hardware_info():
+    """What this computer has and the route a capture will take on it
+    (tools/hardware.py). Read-only; the graphics details are probed once per
+    server start, the memory every call."""
+    sys.path.insert(0, str(PROJECT / "tools"))
+    import hardware
+    hw = hardware.probe()
+    route = hardware.plan(hw)
+    return {"summary": hardware.summary(hw, route), "route": route,
+            "cpu": hw["cpu"], "threads": hw["threads"],
+            "gpu": (hw["nvidia"][0]["name"] if hw["nvidia"]
+                    else hw["adapters"][0]["name"] if hw["adapters"] else None),
+            "nvidia": bool(hw["nvidia"]), "memory": hw["memory"]}
+
+
 @app.get("/api/jobs")
 def jobs():
     return {"jobs": runner.listing()}
@@ -190,6 +212,12 @@ def mesh_status(name: str):
         blocking.append(f"no COLMAP model under work\\{safe}")
     elif views == 0:
         blocking.append(f"no frames left in work\\{safe}\\images")
+    if not single_photo:
+        # dense stereo is CUDA-only in COLMAP: on a machine without an NVIDIA
+        # card, say so rather than start a job that cannot finish
+        route = _route()
+        if not route["mesh"]["ok"]:
+            blocking.append(route["mesh"]["why"])
 
     try:
         import dense_mesh

@@ -19,6 +19,9 @@ input/
 output/
 # Marc's numbered milestone backups and session records: on disk, never in git
 history and back up/
+# The development record -- test runs, measurements, renders, scenes made from
+# footage (people may be in them): kept on disk for the tool's story, never in git
+test outputs/
 # local editor/agent config; holds absolute, machine-specific paths
 .claude/
 

@@ -408,11 +408,55 @@ MAPPER_ATTEMPTS = [
 ]
 
 
-def run_colmap(work: Path, *, matcher: str, focal_35mm: float,
-               dry: bool) -> tuple[Path, str]:
-    """Solve camera poses. Returns the undistorted dataset and which mapper
-    initialisation settings produced it, for the record in capture.json."""
-    print(f"[3/5] poses   COLMAP ({matcher} matching)")
+def _exit_code(exc: StageError) -> int | None:
+    m = re.search(r"\(exit (-?\d+)\)", str(exc).splitlines()[0])
+    return int(m.group(1)) if m else None
+
+
+def run_adaptive(build, *, gpu: bool, threads: int, label: str, dry: bool,
+                 before_retry=None, parse=None) -> dict:
+    """Run a COLMAP step on the fastest route, and step down when it fails.
+
+    `build(gpu, threads)` gives the command. The ladder: the NVIDIA card if the
+    plan has one -> the processor at the planned thread count -> half as many
+    threads -> ... -> one. A failure is only allowed to END the capture on the
+    last rung: on a laptop, slower is fine and failing is not. Measured reason
+    for the thread rungs: this COLMAP build's CPU feature extraction crashes
+    intermittently above ~12 threads (tools/hardware.py). `before_retry()`
+    cleans up whatever a crashed attempt left half-written.
+    Returns what finally ran, for the record.
+    """
+    rungs = [(True, threads)] if gpu else []
+    t = threads
+    while True:
+        rungs.append((False, t))
+        if t <= 1:
+            break
+        t = max(1, t // 2)
+    last = None
+    for i, (use_gpu, n) in enumerate(rungs):
+        if i:
+            where = "the processor" if not use_gpu else "the graphics card"
+            print(f"    {label} failed ({str(last).splitlines()[0]}); "
+                  f"retrying on {where} with {n} thread{'s' * (n != 1)}")
+            if before_retry and not dry:
+                before_retry()
+        try:
+            run(build(use_gpu, n), label=label, dry=dry, parse=parse)
+            return {"gpu": use_gpu, "threads": None if use_gpu else n,
+                    "retries": i}
+        except StageError as exc:
+            last = exc
+    raise last
+
+
+def run_colmap(work: Path, *, matcher: str, focal_35mm: float, dry: bool,
+               gpu: bool = True, threads: int = 12) -> tuple[Path, str, dict]:
+    """Solve camera poses. Returns the undistorted dataset, which mapper
+    initialisation settings produced it, and which route features and matching
+    took -- for the record in capture.json."""
+    route = "the NVIDIA card" if gpu else f"the processor, {threads} threads"
+    print(f"[3/5] poses   COLMAP ({matcher} matching, features on {route})")
     images = work / "images"
     database = work / "database.db"
     sparse = work / "sparse"
@@ -441,7 +485,7 @@ def run_colmap(work: Path, *, matcher: str, focal_35mm: float,
                     if p.suffix.lower() in IMAGE_SUFFIXES]) if not dry else 0
 
     print("    feature extraction")
-    cmd = [COLMAP, "feature_extractor",
+    base = [COLMAP, "feature_extractor",
            "--database_path", database,
            "--image_path", images,
            # one physical camera shot the whole clip, so solving a single shared
@@ -455,16 +499,31 @@ def run_colmap(work: Path, *, matcher: str, focal_35mm: float,
            # vs 0.55 px here, 0.79 vs 0.52 px on the smoke clip) and, once the
            # mapper initialisation was fixed, made no difference to whether a
            # forward walk reconstructs at all.
-           "--ImageReader.camera_model", "OPENCV",
-           # COLMAP 4.x renamed these from SiftExtraction/SiftMatching.use_gpu
-           "--FeatureExtraction.use_gpu", "1"]
+           "--ImageReader.camera_model", "OPENCV"]
     params = focal_prior(images, focal_35mm) if not dry else None
     if params:
-        cmd += ["--ImageReader.camera_params", params]
-    run(cmd, label="COLMAP feature_extractor", dry=dry,
-        parse=counter(r"Processed file \[(\d+)/(\d+)\]", "frames scanned for features"))
+        base += ["--ImageReader.camera_params", params]
+
+    def extract(use_gpu: bool, n: int) -> list:
+        # COLMAP 4.x renamed these from SiftExtraction/SiftMatching.use_gpu.
+        # On the processor the thread count is ALWAYS given: COLMAP's default
+        # (every core) crashes this build (tools/hardware.py).
+        return base + ["--FeatureExtraction.use_gpu", "1" if use_gpu else "0",
+                       *([] if use_gpu else ["--FeatureExtraction.num_threads", str(n)])]
+
+    def fresh_database():
+        # a crashed extraction leaves some images' features in the database;
+        # the retry starts clean rather than trusting a half-written one
+        database.unlink(missing_ok=True)
+
+    routes = {"features": run_adaptive(
+        extract, gpu=gpu, threads=threads, label="COLMAP feature_extractor",
+        dry=dry, before_retry=fresh_database,
+        parse=counter(r"Processed file \[(\d+)/(\d+)\]", "frames scanned for features"))}
 
     print("    matching")
+    on = lambda use_gpu, n: ["--FeatureMatching.use_gpu", "1" if use_gpu else "0",   # noqa: E731
+                             *([] if use_gpu else ["--FeatureMatching.num_threads", str(n)])]
     if matcher == "sequential":
         # Video frames arrive in order, so only nearby frames can overlap.
         # Loop detection lets a capture that returns to its starting point close
@@ -472,18 +531,18 @@ def run_colmap(work: Path, *, matcher: str, focal_35mm: float,
         # (Its vocabulary-tree indexing is most of this step's time.)
         index = counter(r"Indexing image \[(\d+)/(\d+)\]", "frames indexed for loop detection")
         match = counter(r"Processing image \[(\d+)/(\d+)\]", "frames matched")
-        run([COLMAP, "sequential_matcher",
-             "--database_path", database,
-             "--SequentialMatching.overlap", "10",
-             "--SequentialMatching.loop_detection", "1",
-             "--FeatureMatching.use_gpu", "1"],
-            label="COLMAP sequential_matcher", dry=dry,
+        routes["matching"] = run_adaptive(
+            lambda g, n: [COLMAP, "sequential_matcher",
+                          "--database_path", database,
+                          "--SequentialMatching.overlap", "10",
+                          "--SequentialMatching.loop_detection", "1", *on(g, n)],
+            gpu=gpu, threads=threads, label="COLMAP sequential_matcher", dry=dry,
             parse=lambda line: index(line) or match(line))
     else:
-        run([COLMAP, "exhaustive_matcher",
-             "--database_path", database,
-             "--FeatureMatching.use_gpu", "1"],
-            label="COLMAP exhaustive_matcher", dry=dry,
+        routes["matching"] = run_adaptive(
+            lambda g, n: [COLMAP, "exhaustive_matcher",
+                          "--database_path", database, *on(g, n)],
+            gpu=gpu, threads=threads, label="COLMAP exhaustive_matcher", dry=dry,
             parse=counter(r"Matching block \[(\d+)/(\d+)", "frame blocks matched"))
 
     print("    mapping (this is the slow one)")
@@ -494,7 +553,7 @@ def run_colmap(work: Path, *, matcher: str, focal_35mm: float,
              "--image_path", images,
              "--output_path", sparse],
             label="COLMAP mapper", dry=dry, parse=track)
-        return work / "undistorted", "default"
+        return work / "undistorted", "default", routes
 
     # Good enough to stop retrying. Deliberately stricter than the 50% bar
     # main() rejects a reconstruction at: a frame that is not placed is a piece
@@ -585,7 +644,7 @@ def run_colmap(work: Path, *, matcher: str, focal_35mm: float,
         for f in list(flat.iterdir()):
             if f.is_file():
                 shutil.move(str(f), str(nested / f.name))
-    return undist, mapper_used
+    return undist, mapper_used, routes
 
 
 def pose_summary(undist: Path, images: Path) -> dict:
@@ -637,9 +696,12 @@ def auto_subsample(dataset: Path, requested: int | None) -> int | None:
 def run_brush(dataset: Path, out_dir: Path, *, steps: int, max_splats: int | None,
               sh_degree: int, max_resolution: int, subsample: int | None,
               max_frames: int | None, viewer: bool, dry: bool) -> None:
-    print(f"[4/5] train   Brush, {steps} steps")
+    print(f"[4/5] train   Brush, {steps} steps, up to {max_resolution} px")
     out_dir.mkdir(parents=True, exist_ok=True)
     subsample = auto_subsample(dataset, subsample)
+    if not dry:
+        n = len(list((dataset / "images").glob("*"))) if (dataset / "images").is_dir() else 0
+        memory_check(n // (subsample or 1), max_resolution)
 
     def build(stride: int | None, resolution: int) -> list:
         # Brush decodes the whole dataset into memory, so views times resolution
@@ -691,10 +753,41 @@ def run_brush(dataset: Path, out_dir: Path, *, steps: int, max_splats: int | Non
         except StageError as exc:
             # Only memory exhaustion is worth retrying: it costs minutes,
             # against losing the half hour of pose solving that came before.
-            if "memory allocation" not in str(exc) and "allocation of" not in str(exc):
+            # !! Rust reports it more than one way. "TryReserveError"/"AllocError"
+            # (a failed reservation while decoding a view) was NOT recognised
+            # until 2026-09-26, so student capture B and IMG_1779 each died on the
+            # first attempt instead of retrying smaller.
+            if not any(s in str(exc) for s in OOM_MARKERS):
                 raise
             last = exc
     raise last if last else StageError("Brush training failed")
+
+
+OOM_MARKERS = ("memory allocation", "allocation of", "TryReserveError", "AllocError",
+               "out of memory", "OutOfMemory")
+
+
+def memory_check(views: int, resolution: int) -> None:
+    """Before training: is there memory for it? Measured 2026-09-26 on 103
+    views: Brush's peak RAM was 2.4 GB at 1200 px and 2.9 GB at 1920 px -- the
+    views barely count, the rest is fixed. A machine already full --
+    two Blender windows and a test run -- made Brush fail on a 9.7 MB buffer
+    (student capture B). Warn, with the figure, so the cause is on screen and
+    not guessed; the retry ladder then trains smaller if it must."""
+    try:
+        import hardware
+        free = hardware.memory()
+    except Exception:                                   # noqa: BLE001
+        return
+    avail = min(free["free_gb"], free["commit_free_gb"] or free["free_gb"])
+    # fitted to the two measurements (2.4 GB at 1200 px, 2.9 GB at 1920 px),
+    # plus 1 GB of margin for everything else Brush and the system need
+    need = 1.0 + 2.1 + 0.8 * (views / 103) * (resolution / 1920) ** 2
+    print(f"    memory: {avail:.1f} GB free, training needs about {need:.1f} GB")
+    if avail < need:
+        print(f"    WARNING: less memory free than training needs. Close other "
+              f"programs (Blender, browsers with many tabs) -- or it will retry "
+              f"at a lower resolution, which is softer.")
 
 
 def compress_to_spz(ply: Path, *, dry: bool) -> Path | None:
@@ -779,9 +872,22 @@ def main() -> int:
                          "produced 7.8M splats and a 1.8 GB file. Pass 0 to "
                          "leave it uncapped.")
     ap.add_argument("--sh-degree", type=int, default=3)
-    ap.add_argument("--max-resolution", type=int, default=1200,
-                    help="cap on the longest image edge during training "
-                         "(default 1200; Brush holds every frame in memory)")
+    ap.add_argument("--max-resolution", type=int, default=0,
+                    help="cap on the longest image edge during training. Default "
+                         "0 = what this machine allows (tools/hardware.py): 1920 "
+                         "-- a phone frame's own size -- on a strong machine, "
+                         "less on a weak one. It was a fixed 1200 until "
+                         "2026-09-26, which trained phone video at 40%% of its "
+                         "pixels and made scenes soft.")
+    ap.add_argument("--quality", choices=["draft", "standard", "high"], default="standard",
+                    help="caps the automatic training resolution (draft: 960)")
+    ap.add_argument("--compute", choices=["auto", "gpu", "cpu"], default="auto",
+                    help="where COLMAP's features and matching run: auto = the "
+                         "NVIDIA card when there is one, else the processor; cpu "
+                         "forces the processor (the laptop route)")
+    ap.add_argument("--threads", type=int, default=0,
+                    help="processor threads for COLMAP (default 0 = planned: at "
+                         "most 12, fewer when memory is short)")
     ap.add_argument("--subsample-frames", type=int, default=None,
                     help="train on every Nth registered frame, to fit memory")
     ap.add_argument("--train-max-frames", type=int, default=None,
@@ -821,10 +927,27 @@ def main() -> int:
     order = ["frames", "prune", "poses", "train"]
     start_at = order.index(args.start)
 
+    # THE ROUTE: what this machine has decides where each step runs
+    import hardware
+    hw = hardware.probe()
+    route = hardware.plan(hw, compute=args.compute, quality=args.quality)
+    colmap_gpu = route["colmap"]["gpu"]
+    colmap_threads = args.threads or route["colmap"]["threads"]
+    max_resolution = args.max_resolution or route["train"]["max_resolution"]
+
     print(f"DL-SplatGenerator capture pipeline")
     print(f"  source {source}")
     print(f"  work   {work}")
-    print(f"  output {out_dir}\n")
+    print(f"  output {out_dir}")
+    print(f"  this computer: {hardware.summary(hw, route)}")
+    for note in route["notes"]:
+        print(f"  note: {note}")
+    print()
+    # Brush needs a graphics adapter of some kind; without one the camera solve
+    # alone would not make a scene, so say so BEFORE the minutes are spent.
+    if not route["train"]["ok"] and start_at <= 3 and not args.dry_run:
+        print(f"FAILED: {route['train']['why']}.", file=sys.stderr)
+        return 2
 
     began = time.time()
     try:
@@ -838,9 +961,10 @@ def main() -> int:
                                start=args.trim_start, end=args.trim_end)
             else:
                 raise StageError(f"unsupported source type: {source.suffix}")
-        # both stay None on a resume that starts past the pose stage
+        # all three stay None on a resume that starts past the pose stage
         summary = None
         mapper_used = None
+        colmap_routes = None
         if start_at <= 1:
             prune_blurry(images, work / "rejected",
                          drop_pct=args.blur_drop, dry=args.dry_run)
@@ -848,9 +972,10 @@ def main() -> int:
             privacy = mask_privacy(images, work / "privacy.json",
                                    mode=args.privacy, regions=args.mask_region,
                                    dry=args.dry_run)
-            undist, mapper_used = run_colmap(
+            undist, mapper_used, colmap_routes = run_colmap(
                 work, matcher=args.matcher,
-                focal_35mm=args.focal_35mm, dry=args.dry_run)
+                focal_35mm=args.focal_35mm, dry=args.dry_run,
+                gpu=colmap_gpu, threads=colmap_threads)
         else:
             undist = work / "undistorted"
         if not args.dry_run and start_at <= 2:
@@ -882,7 +1007,7 @@ def main() -> int:
         if start_at <= 3:
             run_brush(undist, out_dir, steps=args.steps,
                       max_splats=args.max_splats, sh_degree=args.sh_degree,
-                      max_resolution=args.max_resolution,
+                      max_resolution=max_resolution,
                       subsample=args.subsample_frames,
                       max_frames=args.train_max_frames,
                       viewer=args.with_viewer, dry=args.dry_run)
@@ -948,7 +1073,16 @@ def main() -> int:
                 "focal_35mm": args.focal_35mm,
                 "steps": args.steps, "max_splats": args.max_splats,
                 "sh_degree": args.sh_degree,
-                "max_resolution": args.max_resolution,
+                "max_resolution": max_resolution,
+                "quality": args.quality,
+            },
+            # where each step ran on this machine, so a slow or soft scene can
+            # be explained afterwards (tools/hardware.py)
+            "hardware": {
+                "summary": hardware.summary(hw, route),
+                "compute": args.compute,
+                "colmap": colmap_routes,
+                "train_gpu": route["train"]["gpu"],
             },
         }
         (out_dir / "capture.json").write_text(json.dumps(manifest, indent=2))

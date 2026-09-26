@@ -84,7 +84,13 @@ def estimate_depth(image_path: Path, model_id: str, max_side: int):
                          Image.LANCZOS)
     log(f"    image {img.width}x{img.height}")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # the fastest this machine's torch offers: an NVIDIA card (CUDA), Apple
+    # silicon's graphics (MPS), else the processor. NB the venv on the
+    # workstation carries the CPU-only torch, so it runs on the processor
+    # there even with an NVIDIA card: 13 s warm, fine for one photograph.
+    mps = getattr(torch.backends, "mps", None)
+    device = ("cuda" if torch.cuda.is_available()
+              else "mps" if mps is not None and mps.is_available() else "cpu")
     log(f"    loading {model_id} on {device}")
     processor = AutoImageProcessor.from_pretrained(model_id)
     model = AutoModelForDepthEstimation.from_pretrained(model_id).to(device).eval()

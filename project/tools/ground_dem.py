@@ -186,25 +186,34 @@ def write_geotiff(path: Path, grid: np.ndarray, cell: float,
 
 # ------------------------------------------------------------- levelling
 
-def up_from_model(sparse: Path) -> np.ndarray | None:
-    """Mean world up from the frames, in the cloud's own frame.
+def up_from_model(sparse: Path, xyz: np.ndarray | None = None) -> dict | None:
+    """Which way is up, in the cloud's own frame -- the SAME rule the viewer
+    uses (tools/level.py, twin of static/level.js), so a terrain model and the
+    scene agree on what is level.
 
-    COLMAP's camera Y points down, so up is the average of -R[1] over the
-    registered images. No viewer flip here: the fused cloud is in COLMAP's
-    frame, not the viewer's.
+    Until 2026-09-26 this was the mean of the frames' up vectors, which stands
+    a ground filmed looking DOWN on its edge (student capture A: 78 deg off).
+    COLMAP's camera axes are the rows of R: x right, y DOWN, z forward; the
+    centre is -R^T t. No viewer flip here: the fused cloud is in COLMAP's frame.
+    Returns level.estimate_up's dict (up, method, ...), or None.
     """
     images = sparse / "images.bin"
     if not images.is_file():
         return None
-    ups = []
+    rows = []
     for im in colmap_cameras.read_images_bin(images):
-        R = colmap_cameras.quat_to_matrix(*im["q"])
-        ups.append((-R[1][0], -R[1][1], -R[1][2]))
-    if not ups:
+        R = np.asarray(colmap_cameras.quat_to_matrix(*im["q"]), dtype=np.float64)
+        rows.append((im["name"], -R.T @ np.asarray(im["t"], dtype=np.float64), R[2], -R[1]))
+    if not rows:
         return None
-    v = np.asarray(ups, dtype=np.float64).mean(axis=0)
-    n = np.linalg.norm(v)
-    return v / n if n > 1e-9 else None
+    rows.sort(key=lambda r: r[0])                    # filming order
+    pos, dirs, ups = (np.asarray([r[i] for r in rows]) for i in (1, 2, 3))
+    if xyz is None or len(xyz) < 50:
+        v = ups.mean(axis=0)
+        return {"up": v / np.linalg.norm(v), "method": "mean up"}
+    step = max(1, len(xyz) // 20000)
+    import level
+    return level.estimate_up(pos, dirs, ups, xyz[::step])
 
 
 def path_from_model(sparse: Path) -> np.ndarray | None:
@@ -508,16 +517,41 @@ def main() -> int:
     xyz, rgb = read_ply(src)
     print(f"    {len(xyz):,} points")
     sparse = WORK / name / "dense" / "sparse"
-    up = up_from_model(sparse)
-    if up is None:
+    est = up_from_model(sparse, xyz)
+    level_record = None
+    up = None
+    if est is None:
         print("    WARNING: no camera model beside this cloud; assuming +Z is "
               "already up. A terrain model from a tilted cloud is wrong.")
         R = np.eye(3)
     else:
+        import level
+        up = est["up"]
         R = rotation_to_z(up)
         tilt = math.degrees(math.acos(max(-1.0, min(1.0, float(up[2])))))
-        print(f"    up from {sparse.name}: {np.round(up, 4).tolist()} "
+        print(f"    up by '{est['method']}': {np.round(up, 4).tolist()} "
               f"({tilt:.1f} deg off the cloud's own +Z)")
+        level_record = {"method": est["method"], "up": [round(float(x), 6) for x in up]}
+        if est.get("look_down") is not None:
+            level_record["cameras_look_down_deg"] = round(est["look_down"], 1)
+            print(f"    the cameras looked {est['look_down']:.0f} deg down onto the "
+                  f"dominant plane ({est.get('share', 0):.0%} of the points)")
+        if est.get("mean_up") is not None:
+            off = level.angle_deg(up, est["mean_up"])
+            level_record["vs_mean_up_deg"] = round(off, 2)
+            print(f"    {off:.1f} deg from the cameras' mean up (the rule before 2026-09-26)")
+        if est["method"] == "held level, walk straight" and est.get("walk_level") is not None:
+            # the one ambiguity: say how big it is, so a grade is read with it
+            alt = level.angle_deg(up, est["walk_level"])
+            level_record["walk_horizontal_alternative_deg"] = round(alt, 2)
+            level_record["caveat"] = (
+                "The walk never turned, so along it the vertical rests on the phone "
+                "being held level on average: a grade along the path is uncertain by "
+                "the camera's average pitch. Assuming instead that the walk is "
+                f"horizontal would tilt the model {alt:.1f} deg.")
+            print(f"    NOTE: the walk never turned -- along it, 'level' assumes the "
+                  f"phone was held level on average; assuming a horizontal walk "
+                  f"instead would differ by {alt:.1f} deg")
     level = xyz @ R.T
     if calibrated:
         level = level * factor
@@ -703,6 +737,8 @@ def main() -> int:
         "ground_points": n_ground,
         "ground_share_percent": round(share, 1),
         "up_used": None if up is None else [round(float(v), 5) for v in up],
+        # how "up" was found (tools/level.py, the viewer's rule)
+        "level": level_record,
         "corridor": corridor,
         "unrolled": unrolled,
         "raster_frame": ("along the walk (x) by offset across it (y) -- a "
@@ -732,6 +768,13 @@ def main() -> int:
             "measured.",
         ],
     }
+    if level_record and level_record.get("caveat"):
+        record["caveats"].append(level_record["caveat"])
+    if level_record and level_record.get("method") == "ground":
+        record["caveats"].append(
+            "Levelled to the GROUND: the capture looked down at it, so the "
+            "dominant plane of the scan was taken as level. A real slope in that "
+            "plane is flattened -- read no grade off this model.")
     if corridor:
         record["caveats"].append(
             f"Cropped to {corridor['half_width']:g} either side of the walk "

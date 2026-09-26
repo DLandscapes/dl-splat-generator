@@ -27,7 +27,7 @@
          wherever it appears. -->
     <a id="logo-link" href="https://digital-landscapes.com/" target="_blank"
        rel="noopener" title="Digital Landscapes &mdash; opens in a new tab">
-      <img id="logo" src="static/logo-dl.png" alt="Digital Landscapes">
+      <span id="logo" role="img" aria-label="Digital Landscapes"></span>
     </a>
     <div>
       <!-- Set with a space and WITHOUT the DL- prefix: the DL mark already sits
@@ -115,8 +115,8 @@
            answer; it is not a .why, so hiding explanations keeps it. -->
       <div id="make-local" hidden>
         <strong>Making a scene from a video or a photo</strong>
-        <span>runs on your own computer, not in the browser. It currently needs
-          Windows with an NVIDIA graphics card, and a local set-up.</span>
+        <span>runs on your own computer, not in the browser. It needs Windows and a
+          local set-up; an NVIDIA graphics card makes it faster, but is not required.</span>
         <a href="https://github.com/DLandscapes/dl-splat-generator#making-scenes--the-generator"
            target="_blank" rel="noopener">How to set it up &rarr;</a>
       </div>
@@ -166,6 +166,11 @@
             Only faces are found &mdash; number plates, signs, house numbers and people
             seen from behind stay as filmed. Look through the scene before you share it.
           </div>
+          <!-- Which route this computer takes (tools/hardware.py via
+               /api/hardware): the NVIDIA card where there is one, the
+               processor where there is not. Not a .why -- it is a fact about
+               this machine, and it explains a slow run before it starts. -->
+          <div class="meta" id="make-hardware"></div>
           <!-- The other way in: one photograph, metric depth, seconds instead of
                half an hour. Deliberately below the video route and visibly separate,
                because what it produces is 2.5D, not a capture. -->
@@ -218,6 +223,7 @@
           <label class="check"><input type="checkbox" id="level-horizon" checked>
             Level the horizon</label>
           <div class="meta" id="level-note"></div>
+          <button id="level-points" class="ghost">Level by three points on the ground</button>
           <label class="field">
             <span>Detail <em id="lod-val">100 %</em></span>
             <input type="range" id="lod-scale" min="0.1" max="1" step="0.05" value="1">

@@ -145,9 +145,13 @@ one, and is faithful only near the positions it was filmed from.
 ## Making scenes — the generator
 
 The generator is **optional** and considerably heavier than the viewer. It
-needs **Windows, an NVIDIA graphics card with CUDA**, a Python 3.12 environment,
-and three programs that are **not part of this repository** — COLMAP, Brush and
-FFmpeg — fetched separately. [`project/README.md`](project/README.md) covers the
+needs **Windows** (the bundled programs are Windows builds), a Python 3.12
+environment, and three programs that are **not part of this repository** —
+COLMAP, Brush and FFmpeg — fetched separately. It takes the **fastest route the
+computer allows**: with an NVIDIA graphics card the camera solve runs on it;
+without one, on the processor — slower, same result. Training needs a graphics
+card of any maker; only the measurable mesh needs NVIDIA. The panel says which
+route this computer will take before a capture starts. [`project/README.md`](project/README.md) covers the
 setup and every stage in detail. With it running, the app gains:
 
 - **A scene from a video.** Drop a walked phone video, trim it to the part worth
