@@ -164,9 +164,43 @@ def run(cmd: list, *, label: str, dry: bool, cwd: Path | None = None,
 
 # ------------------------------------------------------------- 1: extract
 
+BAR_SHARE = 0.08        # black bars taking at least this share of the picture are cropped away
+
+
+def detect_bars(video: Path, start: float = 0.0, end: float = 0.0) -> dict | None:
+    """Black bars around the picture (a portrait clip inside a landscape frame, a re-export from a
+    messaging app ...): ffmpeg's cropdetect over up to 4 s of the clip, after the rotation flag is
+    applied. Found 2026-09-27 on a student's clip, 608 x 1080 inside 1920 x 1080: two thirds of every
+    frame black -- the camera solve took the wrong lens, the splat learned the black and the mesh
+    texture was painted from it. Returns the crop when the bars take >= BAR_SHARE of the picture."""
+    import re
+    s = max(start, 0.0) + 0.5
+    span = min(4.0, (end - s) if end > s else 4.0)
+    cmd = [FFMPEG, "-hide_banner", "-ss", f"{s:.3f}", "-i", str(video), "-t", f"{span:.3f}",
+           "-vf", "cropdetect=limit=24:round=2:reset=0", "-f", "null", "-"]
+    try:
+        err = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=120).stderr
+    except (OSError, subprocess.SubprocessError):
+        return None
+    crops = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", err)
+    size = re.search(r"Video: .*?(\d{2,5})x(\d{2,5})", err)
+    if not crops or not size:
+        return None
+    W, H = int(size.group(1)), int(size.group(2))
+    rot = re.search(r"rotation of (-?\d+(?:\.\d+)?) degrees", err)
+    if rot and abs(abs(float(rot.group(1))) - 90) < 1:
+        W, H = H, W
+    w, h, x, y = map(int, crops[-1])
+    if w <= 0 or h <= 0 or w * h >= (1 - BAR_SHARE) * W * H:
+        return None
+    return {"w": w, "h": h, "x": x, "y": y, "frame": [W, H],
+            "why": "black bars around the picture (ffmpeg cropdetect) -- cropped before anything else"}
+
+
 def extract_frames(video: Path, images: Path, *, stride: int, max_frames: int | None,
                    max_width: int | None, dry: bool,
-                   start: float = 0.0, end: float = 0.0) -> None:
+                   start: float = 0.0, end: float = 0.0) -> dict | None:
     window = ""
     if start > 0 or end > 0:
         window = f", {start:g}s to {end:g}s" if end > 0 else f", from {start:g}s"
@@ -174,13 +208,18 @@ def extract_frames(video: Path, images: Path, *, stride: int, max_frames: int | 
           f"{stride}{'st' if stride == 1 else 'th'} frame{window}")
     if images.exists() and any(images.iterdir()):
         print(f"    reusing {len(list(images.iterdir()))} frames already in {images}")
-        return
+        return None
     images.mkdir(parents=True, exist_ok=True)
 
     # select drops all but every Nth frame; vsync 0 stops ffmpeg re-timing them.
     # ffmpeg applies the container rotation flag by default, so portrait video
     # comes out portrait rather than on its side.
     filters = [f"select=not(mod(n\\,{stride}))"]
+    bars = None if dry else detect_bars(video, start, end)
+    if bars:
+        filters.insert(0, f"crop={bars['w']}:{bars['h']}:{bars['x']}:{bars['y']}")
+        print(f"    black bars: the picture is {bars['w']} x {bars['h']} inside {bars['frame'][0]} x "
+              f"{bars['frame'][1]} -- cropped to the picture")
     if max_width:
         filters.append(f"scale='min({max_width},iw)':-2")
     cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-y"]
@@ -202,6 +241,7 @@ def extract_frames(video: Path, images: Path, *, stride: int, max_frames: int | 
     run(cmd, label="ffmpeg frame extraction", dry=dry)
     if not dry:
         print(f"    {len(list(images.glob('*.jpg')))} frames written")
+    return bars
 
 
 def copy_stills(folder: Path, images: Path, *, dry: bool) -> None:
@@ -695,7 +735,10 @@ def auto_subsample(dataset: Path, requested: int | None) -> int | None:
 
 def run_brush(dataset: Path, out_dir: Path, *, steps: int, max_splats: int | None,
               sh_degree: int, max_resolution: int, subsample: int | None,
-              max_frames: int | None, viewer: bool, dry: bool) -> None:
+              max_frames: int | None, viewer: bool, dry: bool,
+              extra: tuple = ()) -> None:
+    """`extra`: more Brush options, appended as given (tools/train_levels.py passes
+    --subsample-points so a small cap is not below the sparse starting cloud)."""
     print(f"[4/5] train   Brush, {steps} steps, up to {max_resolution} px")
     out_dir.mkdir(parents=True, exist_ok=True)
     subsample = auto_subsample(dataset, subsample)
@@ -721,6 +764,7 @@ def run_brush(dataset: Path, out_dir: Path, *, steps: int, max_splats: int | Non
             cmd += ["--max-splats", str(max_splats)]
         if viewer:
             cmd += ["--with-viewer"]
+        cmd += [str(e) for e in extra]
         return cmd
 
     # Fallbacks for memory exhaustion, cheapest loss first. Resolution is
@@ -920,10 +964,16 @@ def main() -> int:
 
     name = args.name or source.stem
     work_root = Path(args.work_root).expanduser().resolve() if args.work_root else WORK
-    out_root = Path(args.out_root).expanduser().resolve() if args.out_root else OUTPUT
+    # a student's video: output/3D scans for students/<name>/working/ (scene_paths)
+    import scene_paths
+    if args.out_root:
+        out_root = Path(args.out_root).expanduser().resolve()
+        out_dir = out_root / name
+    else:
+        out_root = OUTPUT
+        out_dir = scene_paths.new_scene_dir(source, name)
     work = work_root / name
     images = work / "images"
-    out_dir = out_root / name
     order = ["frames", "prune", "poses", "train"]
     start_at = order.index(args.start)
 
@@ -950,12 +1000,13 @@ def main() -> int:
         return 2
 
     began = time.time()
+    bars = None
     try:
         if start_at <= 0:
             if source.is_dir():
                 copy_stills(source, images, dry=args.dry_run)
             elif source.suffix.lower() in VIDEO_SUFFIXES:
-                extract_frames(source, images, stride=args.stride,
+                bars = extract_frames(source, images, stride=args.stride,
                                max_frames=args.max_frames,
                                max_width=args.max_width, dry=args.dry_run,
                                start=args.trim_start, end=args.trim_end)
@@ -1066,7 +1117,7 @@ def main() -> int:
                                if summary else None),
             "settings": {
                 "privacy": args.privacy,
-                "stride": args.stride, "max_width": args.max_width,
+                "stride": args.stride, "max_width": args.max_width, "crop": bars,
                 "trim": ({"start": args.trim_start, "end": args.trim_end}
                          if (args.trim_start > 0 or args.trim_end > 0) else None),
                 "blur_drop": args.blur_drop, "matcher": args.matcher,
@@ -1097,7 +1148,9 @@ def main() -> int:
             original=final if spz else None,
             cameras=cams_file if cams_file.is_file() else None,
             created=manifest["created"],
-            method="video capture")
+            method="video capture",
+            # one list for the viewer, whichever folder the scene went into
+            index_root=out_root if args.out_root else OUTPUT, folder=out_dir)
         print(f"    {final}  ({size_mb:.1f} MB)")
         print(f"\nDone in {human(time.time() - began)}.")
         print(f"Open it: start the viewer and pick \"{name}\" under "

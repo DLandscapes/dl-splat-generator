@@ -117,8 +117,18 @@ def write_ply(path: Path, xyz: np.ndarray, rgb: np.ndarray | None) -> None:
 # -------------------------------------------------------------- geotiff
 
 def write_geotiff(path: Path, grid: np.ndarray, cell: float,
-                  origin_xy: tuple[float, float]) -> None:
+                  origin_xy: tuple[float, float], geokeys: bool = False) -> None:
     """A minimal float32 GeoTIFF: the grid, its cell size and its origin.
+
+    `origin_xy` is the NORTH-WEST corner of the top-left cell -- (x0, y1) from
+    rasterise(): ModelTiepoint ties raster (0, 0) to it, and every reader
+    (GDAL, QGIS, DL-TerrainDiversity, DL-3DPrint) counts rows south from there.
+    !! Until 2026-09-27 both callers passed (x0, y1 - (ny-1)*cell), the SOUTH
+    edge's row: read the standard way, the grid landed (ny-1) cells too far
+    south -- on one student scan 22 units, not one ground point on it. DL-TerrainSlicer
+    ignores the origin, which is why slicing never showed it. Found by reading
+    the two sibling readers; checked against the ground points
+    (tools/geotiff_origin_test.py).
 
     Deliberately small. DL-TerrainSlicer reads elevation with tifffile and takes
     the cell size from ModelPixelScale (33550), the corner from ModelTiepoint
@@ -145,6 +155,11 @@ def write_geotiff(path: Path, grid: np.ndarray, cell: float,
         (33550, DOUBLE, 3, scale, 0), (33922, DOUBLE, 6, tie, 0),
         (42113, ASCII, len(nodata), nodata, 0),
     ]
+    if geokeys:
+        # as DL-TerrainDiversity's own writer: projected, PixelIsArea, CRS user-defined
+        # (32767) -- a local frame, said so, instead of no GeoKeyDirectory at all
+        keys = struct.pack("<16H", 1, 1, 0, 3, 1024, 0, 1, 1, 1025, 0, 1, 1, 3072, 0, 1, 32767)
+        entries.insert(-1, (34735, SHORT, 16, keys, 0))
     ifd_offset = 8
     ifd_size = 2 + 12 * len(entries) + 4
     payload_at = ifd_offset + ifd_size
@@ -393,6 +408,15 @@ def cell_for_density(xyz: np.ndarray, start: float, min_points: int,
                             "keep_fraction": keep, "rounds": history}
 
 
+
+def write_raster(path: Path, grid: np.ndarray, cell: float, meta: tuple,
+                 geokeys: bool = False) -> None:
+    """Write a grid from rasterise() (filled or not) with the meta tuple rasterise
+    returned. The one way the tools write a DEM: no caller works out the corner
+    itself -- that is where the tie-point bug of 2026-09-27 lived."""
+    x0, y1 = meta[0], meta[1]
+    write_geotiff(path, grid, cell, (x0, y1), geokeys)
+
 def rasterise(xyz: np.ndarray, cell: float, min_points: int = 2) -> tuple[np.ndarray, tuple]:
     """Ground points -> a grid of mean height, NaN where nothing was seen.
 
@@ -496,7 +520,9 @@ def main() -> int:
     name = src.stem
     if not src.is_file():
         name = args.name
-        src = (Path(args.out_root).resolve() if args.out_root else OUTPUT) / name / "mesh" / "dense.ply"
+        import scene_paths          # the scene may be a student's (scene_paths)
+        src = (Path(args.out_root).resolve() / name if args.out_root
+               else scene_paths.scene_dir(name)) / "mesh" / "dense.ply"
     if not src.is_file():
         print(f"FAILED: no dense cloud at {src} -- build the mesh first",
               file=sys.stderr)
@@ -687,7 +713,8 @@ def main() -> int:
                   f"{first['quantile_count']:g} points, not {min_points}")
             print(f"    (coarsened until {target}% of them reach the threshold, "
                   f"in {len(density['rounds'])} step(s))")
-    grid, (x0, y1, nx, ny, thin) = rasterise(surface, grid_cell, min_points)
+    grid, meta = rasterise(surface, grid_cell, min_points)
+    x0, y1, nx, ny, thin = meta
     holes_before = int(np.isnan(grid).sum())
     grid, filled = fill_holes(grid, args.fill)
     holes_after = int(np.isnan(grid).sum())
@@ -708,8 +735,7 @@ def main() -> int:
     # cloud laid out flat would be a lie about where anything is
     write_ply(out_dir / ply_name, level[ground],
               rgb[ground] if rgb is not None else None)
-    write_geotiff(out_dir / tif_name, grid, grid_cell,
-                  (x0, y1 - (ny - 1) * grid_cell))
+    write_raster(out_dir / tif_name, grid, grid_cell, meta)
     if corridor:
         band = args.band or max(round(corridor["walk_length"] / 12.0, 2), grid_cell)
         corridor["profile_band"] = band

@@ -77,6 +77,24 @@ STAGE_LABELS = {
     "stereo": "Matching every view against its neighbours (COLMAP)",
     "fuse": "Fusing the depth maps into one cloud",
     "mesh": "Building the surface",
+    # the package route (tools/build_package.py prints [1/17] site ... [17/17] zip)
+    "site": "Setting up the site coordinates",
+    "video": "Copying the video in",
+    "splat": "Moving the splat to site coordinates",
+    "levels": "Training the lighter splats (Brush)",
+    "texture": "Painting the mesh from the video",
+    "table": "Writing the camera table",
+    "exports": "Writing the Rhino and glTF files",
+    "terrain": "Point cloud, ground and contours",
+    "drawings": "Drawing the plan and elevations",
+    "plandxf": "Writing the plan DXF",
+    "viewer": "Bundling the scene for the viewer",
+    "paths": "Making the example camera moves",
+    "models": "Surface and ground models, shells",
+    "addon": "Copying the Blender add-on in",
+    "blender": "Building the Blender files",
+    "readme": "Writing START HERE",
+    "zip": "Zipping and checking the package",
     "finished": "Finished",
 }
 PHASE_LABELS = {
@@ -199,6 +217,8 @@ class Job:
     phase_started: float | None = None
     phase_times: dict = field(default_factory=dict)   # phase -> seconds
     warnings: list = field(default_factory=list)
+    # package jobs: {"levels": "train"|"skip", "blender": "build"|"skip", "place": bool, "zip": bool}
+    options: dict = field(default_factory=dict)
 
     # ---- progress model -------------------------------------------------
 
@@ -265,6 +285,40 @@ class Job:
         return {"pct": round(pct, 1), "eta": eta,
                 "finishAt": round(now + eta) if eta is not None else None}
 
+    # The package route: weights, not seconds, per step (build_package.py's order). Training
+    # the three lighter splats is most of it when asked for (about 5 min each on an RTX
+    # card, 2026-09-27), then the textured mesh and the Blender files; the rest is seconds.
+    PACKAGE_PRED = {"site": 0.2, "video": 0.2, "splat": 0.5, "levels": 60.0, "texture": 6.0,
+                    "table": 0.2, "exports": 0.5, "terrain": 1.0, "drawings": 2.0, "plandxf": 0.3,
+                    "viewer": 0.5, "paths": 2.5, "models": 0.5, "addon": 0.1, "blender": 6.0,
+                    "readme": 0.5, "zip": 1.5}
+
+    def _estimate_package(self) -> dict:
+        pred = dict(self.PACKAGE_PRED)
+        if self.options.get("levels") == "skip":
+            pred["levels"] = 0.0
+        if self.options.get("blender") == "skip":
+            pred["blender"] = 0.0
+        if not self.options.get("zip"):
+            pred["zip"] = 0.0
+        order = list(pred)
+        total = sum(pred.values())
+        cur = self.stage if self.stage in order else order[0]
+        idx = order.index(cur)
+        done = sum(pred[p] for p in order[:idx])
+        frac = 0.0
+        if self.counter and self.counter.get("total"):
+            frac = min(1.0, self.counter["done"] / self.counter["total"])
+        elif self.phase_started:
+            frac = min(0.9, (time.time() - self.phase_started) / 60.0)
+        done += pred[cur] * frac
+        pct = max(0.0, min(99.0, 100.0 * done / total)) if total else 0.0
+        now = time.time()
+        elapsed = now - (self.started or now)
+        eta = max(0, round(elapsed * (100.0 - pct) / pct)) if pct > 3 else None
+        return {"pct": round(pct, 1), "eta": eta,
+                "finishAt": round(now + eta) if eta is not None else None}
+
     def estimate(self) -> dict:
         """Overall fraction done, seconds left and the finish time (epoch).
 
@@ -281,6 +335,8 @@ class Job:
             return self._estimate_photo()
         if self.kind == "mesh":
             return self._estimate_mesh()
+        if self.kind == "package":
+            return self._estimate_package()
         n, steps = self._n(), self._steps()
         pred = {p: ESTIMATOR.seconds(p, n, steps) for p in Estimator.ORDER}
         order = Estimator.ORDER
@@ -350,11 +406,13 @@ class JobRunner:
     def submit(self, *, source: Path, name: str, quality: str, privacy: str,
                kind: str = "capture", scene: str = "outdoor",
                mesher: str = "delaunay",
-               trim_start: float = 0.0, trim_end: float = 0.0) -> Job:
+               trim_start: float = 0.0, trim_end: float = 0.0,
+               options: dict | None = None) -> Job:
         job = Job(id=uuid.uuid4().hex[:12], name=name, source=str(source),
                   quality=quality, privacy=privacy, kind=kind, scene=scene,
                   mesher=mesher, trim_start=trim_start, trim_end=trim_end,
-                  stage_count={"photo": 3, "mesh": 4}.get(kind, 5))
+                  options=dict(options or {}),
+                  stage_count={"photo": 3, "mesh": 4, "package": 17}.get(kind, 5))
         with self._lock:
             self._jobs[job.id] = job
         self._queue.put(job)
@@ -399,14 +457,18 @@ class JobRunner:
                            "what": m.group(3).strip()}
             return
         job.lines.append(line)
-        m = STAGE_RE.match(text)
+        # A package job's own steps start at the line's beginning; the tools it runs are
+        # indented under them -- and training prints capture.py's own "[4/5] train", which,
+        # matched after strip(), turned the card into "step 4 of 5" (2026-09-27).
+        m = STAGE_RE.match(line if job.kind == "package" else text)
         if m:
             job.stage_index = int(m.group(1))
             job.stage_count = int(m.group(3))
             job.stage = m.group(4)
-            if job.stage in ("frames", "prune", "privacy", "train", "place",
-                             "depth", "splats", "write",
-                             "workspace", "stereo", "fuse", "mesh"):
+            if job.kind == "package" or job.stage in (
+                    "frames", "prune", "privacy", "train", "place",
+                    "depth", "splats", "write",
+                    "workspace", "stereo", "fuse", "mesh"):
                 job._enter_phase(job.stage)
             return
         if text in PHASES:
@@ -436,6 +498,19 @@ class JobRunner:
                 "--quality", job.quality,
                 "--mesher", job.mesher,
             ]
+        elif job.kind == "package":
+            # The student package, step by step (tools/build_package.py): it prints
+            # "[i/17] <step>" lines and passes the tools' "~ progress" counters through.
+            o = job.options
+            cmd = [
+                sys.executable, "-u", str(TOOLS / "build_package.py"), job.name,
+                "--levels", o.get("levels", "train"),
+                "--blender", o.get("blender", "build"),
+            ]
+            if not o.get("place", True):
+                cmd += ["--no-place"]
+            if o.get("zip"):
+                cmd += ["--zip"]
         elif job.kind == "photo":
             # One image, metric depth, no COLMAP and no Brush. The tool writes
             # into output\<name>\ and registers the scene itself, exactly as
@@ -486,7 +561,7 @@ class JobRunner:
                 # only the capture route feeds the learned coefficients: a
                 # photo job has no frame count and no training steps, and its
                 # three stages are not in the estimator's table at all
-                if job.kind != "photo":
+                if job.kind not in ("photo", "package"):
                     ESTIMATOR.learn(job.phase_times, job.frames or 0,
                                     QUALITY.get(job.quality,
                                                 QUALITY["standard"])["steps"])

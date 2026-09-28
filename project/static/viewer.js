@@ -882,10 +882,13 @@ export class Viewer {
       e.preventDefault();
       const r = c.getBoundingClientRect();
       if (!r.width || !r.height) return;
+      // some browsers and mice report lines or pages, not pixels: one notch is
+      // 100 px, 3 lines or (rarely) one page -- the same step either way
+      const unit = e.deltaMode === 1 ? 100 / 3 : e.deltaMode === 2 ? 800 : 1;
       this.zoomAt(
         ((e.clientX - r.left) / r.width) * 2 - 1,
         -((e.clientY - r.top) / r.height) * 2 + 1,
-        e.deltaY,
+        e.deltaY * unit,
       );
     }, { passive: false });
 
@@ -906,33 +909,39 @@ export class Viewer {
   /* ---------------------------------------------------------------- picking */
 
   /**
-   * Zoom by one wheel step towards a normalised device coordinate.
+   * Zoom by one wheel step about the point under a normalised device coordinate.
    *
-   * The orbit pivot is slid onto the surface under the cursor without moving the
-   * camera, by re-deriving yaw/pitch/dist about the new pivot. Zooming then
-   * genuinely closes on what you are looking at, and orbiting afterwards turns
-   * around it rather than around empty space -- with a fixed pivot you can
-   * scroll forever on a large scan and never arrive.
+   * The camera and the orbit pivot both move towards that point by the same factor
+   * and the view direction stays as it is: the point stays under the cursor,
+   * nothing turns, and the pivot closes on what you are looking at -- so orbiting
+   * afterwards turns around it rather than around empty space (with a fixed pivot
+   * you can scroll forever on a large scan and never arrive). Over empty background
+   * the point is the one on the cursor's ray at the pivot's depth.
+   * !! Until 2026-09-27 each notch slid the pivot 35 % towards the point and turned
+   * the camera to it, re-deriving yaw/pitch WITHOUT the levelling rotation: on a
+   * levelled scan (a student capture) the view swung ~30 deg and the point under the cursor moved
+   * ~400 px per notch -- "the model jumps around" (Marc). Measured before and after:
+   * test outputs\2026-09-27\wheel zoom\.
    */
   zoomAt(ndcX, ndcY, deltaY) {
     this.photoView = false;
     this.captureFrame = false;
     this._anim = null;
-    const anchor = this._zoomAnchor(ndcX, ndcY);
-    if (anchor) {
-      const eye = this.camera.position.clone();
-      this._cam.target.lerp(anchor, 0.35);
-      const v = eye.sub(this._cam.target);
-      const d = v.length();
-      if (d > 1e-6) {
-        this._cam.dist = d;
-        this._cam.pitch = THREE.MathUtils.clamp(-Math.asin(v.y / d), -1.54, 1.54);
-        this._cam.yaw = Math.atan2(v.x, v.z);
-      }
-    }
+    // several wheel events can arrive between two frames: pick with the camera as it
+    // is now, not as the last frame left its matrices
+    this.camera.updateMatrixWorld();
     const floor = Math.max((this.sceneRadius || 1) * 1e-4, 1e-4);
-    this._cam.dist = THREE.MathUtils.clamp(
-      this._cam.dist * Math.exp(deltaY * 0.0012), floor, 1e6);
+    const dist = THREE.MathUtils.clamp(this._cam.dist * Math.exp(deltaY * 0.0012), floor, 1e6);
+    const s = dist / this._cam.dist;           // the step actually taken, after the clamp
+    let anchor = this._zoomAnchor(ndcX, ndcY);
+    if (!anchor) {
+      const eye = this.camera.position;
+      const ray = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(this.camera).sub(eye).normalize();
+      const fwd = this.camera.getWorldDirection(new THREE.Vector3());
+      anchor = eye.clone().addScaledVector(ray, this._cam.dist / Math.max(ray.dot(fwd), 1e-3));
+    }
+    this._cam.target.sub(anchor).multiplyScalar(s).add(anchor);
+    this._cam.dist = dist;
     this._updateClip();
     this._applyCamera();
   }

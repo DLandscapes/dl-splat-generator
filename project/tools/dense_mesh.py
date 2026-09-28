@@ -194,8 +194,10 @@ def main() -> int:
         print(f"FAILED: no work folder {work}", file=sys.stderr)
         return 2
     name = work.name
-    out_root = Path(args.out_root).resolve() if args.out_root else OUTPUT
-    out_dir = out_root / name / "mesh"
+    # beside the scene, wherever it was made (scene_paths)
+    import scene_paths
+    out_dir = (Path(args.out_root).resolve() / name if args.out_root
+               else scene_paths.scene_dir(name)) / "mesh"
     dense = work / "dense"
 
     preset = QUALITY[args.quality]

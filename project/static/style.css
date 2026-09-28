@@ -267,6 +267,10 @@ input[type=number], input[type=text], input[type=datetime-local] {
   border: 1px solid var(--line); border-radius: 6px; background: var(--sheet); color: var(--ink);
 }
 #sun-zone { flex: 0 0 72px; }
+/* terrain models made: one row per model, its files as short links that wrap */
+#tm-files li { flex-wrap: wrap; row-gap: 3px; column-gap: 9px; }
+#tm-files .tm-model { flex-basis: 100%; color: var(--ink); }
+#tm-files a { color: var(--ink-soft); font-size: .74rem; }
 
 .list { list-style: none; display: flex; flex-direction: column; gap: 5px; }
 .list li {
@@ -598,3 +602,8 @@ body.terse .why { display: none; }
              max-height: calc(100% - 16px); }
   #menu-chip { left: 8px; top: 8px; }
 }
+/* the package's steps: state on the right, the reason under the step */
+#pkg-steps li { flex-wrap: wrap; row-gap: 2px; }
+#pkg-steps .pkg-why { flex-basis: 100%; color: var(--ink-soft); font-size: .72rem; }
+#pkg-steps li.pkg-done .val { color: var(--ink); }
+#pkg-steps li.pkg-cannot .grow, #pkg-steps li.pkg-off .grow { color: var(--ink-soft); }

@@ -24,7 +24,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import blender_export  # noqa: E402
+import scene_paths  # noqa: E402  -- output/<name>/ or the students' folder
 from jobs import QUALITY, runner  # noqa: E402
 
 APP = Path(__file__).resolve().parent
@@ -197,7 +199,7 @@ def mesh_status(name: str):
     # something that can never produce one.
     single_photo = False
     try:
-        rec = json.loads((OUTPUT / safe / "capture.json").read_text(encoding="utf-8"))
+        rec = json.loads((scene_paths.scene_dir(safe) / "capture.json").read_text(encoding="utf-8"))
         single_photo = rec.get("method") == "single-image metric depth"
     except (OSError, ValueError):
         pass
@@ -227,7 +229,7 @@ def mesh_status(name: str):
     except Exception:                                          # noqa: BLE001
         minutes = {}
 
-    built = OUTPUT / safe / "mesh" / "mesh.json"
+    built = scene_paths.scene_dir(safe) / "mesh" / "mesh.json"
     record = None
     if built.is_file():
         try:
@@ -239,8 +241,8 @@ def mesh_status(name: str):
             "singlePhoto": single_photo, "views": views, "framesOnDisk": on_disk,
             "model": model.name if model else None,
             "estimateMinutes": minutes, "built": record,
-            "cloudUrl": f"/output/{safe}/mesh/dense.ply" if record else None,
-            "meshUrl": f"/output/{safe}/mesh/mesh.ply" if record else None}
+            "cloudUrl": f"{scene_paths.scene_url(safe)}/mesh/dense.ply" if record else None,
+            "meshUrl": f"{scene_paths.scene_url(safe)}/mesh/mesh.ply" if record else None}
 
 
 @app.post("/api/mesh/{name}")
@@ -272,7 +274,8 @@ def dem_status(name: str):
     the walk. They answer different questions, so neither replaces the other.
     """
     safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name)[:60]
-    mesh_dir = OUTPUT / safe / "mesh"
+    mesh_dir = scene_paths.scene_dir(safe) / "mesh"
+    mesh_url = f"{scene_paths.scene_url(safe)}/mesh"
 
     def record(stem: str):
         path = mesh_dir / f"{stem}.json"
@@ -291,16 +294,16 @@ def dem_status(name: str):
             "built": whole,
             "corridor": corridor,
             "unrolled": unrolled,
-            "groundUrl": f"/output/{safe}/mesh/ground.ply" if whole else None,
-            "demUrl": f"/output/{safe}/mesh/dem.tif" if whole else None,
+            "groundUrl": f"{mesh_url}/ground.ply" if whole else None,
+            "demUrl": f"{mesh_url}/dem.tif" if whole else None,
             "corridorGroundUrl":
-                f"/output/{safe}/mesh/ground_corridor.ply" if corridor else None,
+                f"{mesh_url}/ground_corridor.ply" if corridor else None,
             "corridorDemUrl":
-                f"/output/{safe}/mesh/dem_corridor.tif" if corridor else None,
+                f"{mesh_url}/dem_corridor.tif" if corridor else None,
             "unrolledGroundUrl":
-                f"/output/{safe}/mesh/ground_unrolled.ply" if unrolled else None,
+                f"{mesh_url}/ground_unrolled.ply" if unrolled else None,
             "unrolledDemUrl":
-                f"/output/{safe}/mesh/dem_unrolled.tif" if unrolled else None}
+                f"{mesh_url}/dem_unrolled.tif" if unrolled else None}
 
 
 @app.post("/api/dem/{name}")
@@ -349,13 +352,134 @@ def dem_build(name: str, scale: float = 0.0, cell: float = 0.0, fill: int = 4,
     return {"ok": True, "lines": lines, **dem_status(name)}
 
 
+# ---- terrain model for Blender, Rhino and printing (tools/package_dtm.py) ------
+# Unlike the DEM above (the levelled frame, for DL-TerrainSlicer), this works in the scene's
+# SITE coordinates and writes into its package (site data/terrain): a GeoTIFF, a quad mesh
+# with the orthophoto, and a closed shell to cut pieces from. It needs the package's ground
+# points and textured mesh; until the app builds those, a scene without them says so.
+
+def _terrain_models(safe: str) -> list:
+    """The terrain models already made for a scene, with the URLs of their files."""
+    rec_dir = scene_paths.scene_dir(safe) / "mesh"
+    terr = scene_paths.site_data_dir(safe) / "terrain"
+    models = []
+    for rec in sorted(rec_dir.glob("dsm_*.json")) + sorted(rec_dir.glob("dtm_*.json")):
+        try:
+            r = json.loads(rec.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        names = [v for k, v in (r.get("files") or {}).items() if k != "shell"]
+        shells = r.get("shells") or ({f"{r['shell']['thickness']:g}": {"file": r["files"].get("shell")}}
+                                     if r.get("shell") and (r.get("files") or {}).get("shell") else {})
+        names += [s["file"] for s in shells.values() if s.get("file")]
+        files = [{"name": nm, "url": scene_paths.path_url(terr / nm)} for nm in names if (terr / nm).is_file()]
+        if files:
+            models.append({"kind": r.get("kind"), "cell": r.get("cell"), "units": r.get("units"),
+                           "filledShare": (r.get("grid") or {}).get("filled_share"),
+                           "shells": sorted(float(k) for k in shells), "files": files})
+    return models
+
+
+@app.get("/api/terrain-model/{name}")
+def terrain_model_status(name: str):
+    """Can a terrain model be made for this scene, which cell the data gives, which exist."""
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name)[:60]
+    proc = subprocess.run([sys.executable, "-u", str(PROJECT / "tools" / "package_dtm.py"), safe, "--info"],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    line = next((l for l in (proc.stdout or "").splitlines() if l.startswith("DTMINFO ")), None)
+    if proc.returncode != 0 or not line:
+        tail = (proc.stderr or "").strip().splitlines()
+        return {"name": safe, "ready": False, "missing": [tail[-1] if tail else "the terrain tool did not answer"],
+                "built": []}
+    info = json.loads(line[len("DTMINFO "):])
+    info["built"] = _terrain_models(safe) if info.get("ready") else []
+    return info
+
+
+@app.post("/api/terrain-model/{name}")
+def terrain_model_build(name: str, source: str = "surface", cell: float = 0.0, shell: float = 0.0):
+    """Make one terrain model. Synchronous, like the DEM: seconds at the default cell, up to about
+    a minute at the finest the tool allows. `cell` and `shell` 0 = the tool's defaults (the cell the
+    data can fill; three cells). Files that exist with the same bytes stay; different ones stop it."""
+    if source not in ("ground", "surface"):
+        raise HTTPException(400, "source is 'ground' or 'surface'")
+    state = terrain_model_status(name)
+    if not state.get("ready"):
+        raise HTTPException(409, "this scene has no " + "; no ".join(state.get("missing") or ["package"]))
+    cmd = [sys.executable, "-u", str(PROJECT / "tools" / "package_dtm.py"), state["name"], "--source", source]
+    if cell > 0:
+        cmd += ["--cell", str(cell)]
+    if shell > 0:
+        cmd += ["--shell", str(shell)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
+    out = (proc.stdout or "").splitlines()
+    result = next((json.loads(l[len("DTMRESULT "):]) for l in out if l.startswith("DTMRESULT ")), None)
+    lines = [l.rstrip() for l in out if l.strip() and not l.startswith("DTMRESULT ")]
+    if proc.returncode != 0 or result is None:
+        tail = (proc.stderr or "").strip().splitlines()
+        return JSONResponse({"ok": False, "lines": lines,
+                             "error": (tail[-1].replace("FAILED: ", "") if tail else
+                                       f"exited with code {proc.returncode}")}, status_code=409)
+    return {"ok": True, "lines": lines, "result": result, **terrain_model_status(name)}
+
+
+# ---- the package: everything in one folder, and a zip (tools/build_package.py) ------
+
+def _package_flags(levels: str, blender: str, place: bool, zip: bool) -> list:
+    if levels not in ("train", "skip") or blender not in ("build", "skip"):
+        raise HTTPException(400, "levels is train|skip, blender is build|skip")
+    return ["--levels", levels, "--blender", blender] + ([] if place else ["--no-place"]) + (["--zip"] if zip else [])
+
+
+@app.get("/api/package/{name}")
+def package_status(name: str, levels: str = "train", blender: str = "build",
+                   place: bool = True, zip: bool = True):
+    """What building the package would do, step by step (done / to do / cannot, and why),
+    for the options given; runs nothing. Plus where the package and its zip are."""
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name)[:60]
+    cmd = [sys.executable, "-u", str(PROJECT / "tools" / "build_package.py"), safe, "--plan",
+           *_package_flags(levels, blender, place, zip)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    line = next((l for l in (proc.stdout or "").splitlines() if l.startswith("PLAN ")), None)
+    if proc.returncode != 0 or not line:
+        tail = (proc.stderr or "").strip().splitlines()
+        return {"name": safe, "ready": False, "error": tail[-1] if tail else "the package tool did not answer",
+                "steps": []}
+    plan = json.loads(line[len("PLAN "):])
+    zipped = scene_paths.package_zip(safe)
+    running = next((j for j in runner.listing() if j["kind"] == "package" and j["name"] == safe
+                    and j["status"] in ("queued", "running")), None)
+    return {"name": safe, "ready": any(s["state"] == "todo" for s in plan["steps"]),
+            "steps": plan["steps"],
+            "folder": plan["package"],
+            "zipUrl": scene_paths.path_url(zipped) if zipped.is_file() else None,
+            "zipMB": round(zipped.stat().st_size / 1e6) if zipped.is_file() else None,
+            "job": running}
+
+
+@app.post("/api/package/{name}")
+def package_build(name: str, levels: str = "train", blender: str = "build",
+                  place: bool = True, zip: bool = True):
+    """Build the package as a job (minutes: the lighter splats are trained; one job at a
+    time, like a capture). Nothing that exists is overwritten -- see build_package.py."""
+    state = package_status(name, levels, blender, place, zip)
+    if state.get("job"):
+        raise HTTPException(409, "this scene's package is already being built")
+    if not state.get("ready"):
+        raise HTTPException(409, state.get("error") or "nothing to do -- every step is made or cannot run")
+    started = runner.submit(source=state["name"], name=state["name"], quality="standard", privacy="off",
+                            kind="package", options={"levels": levels, "blender": blender,
+                                                     "place": place, "zip": zip})
+    return JSONResponse({"job": started.public()}, status_code=202)
+
+
 @app.get("/api/source/{name}")
 def source_info(name: str):
     """What the scene's source photo or video says about itself -- when, where,
     with what (tools/source_meta.py). Read from the file on demand, so scenes
     made before this existed get it too. Local only: nothing is sent anywhere."""
     safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name)[:120]
-    record = OUTPUT / safe / "capture.json"
+    record = scene_paths.scene_dir(safe) / "capture.json"
     if not record.is_file():
         raise HTTPException(404, f"no capture record for {safe}")
     try:
@@ -382,7 +506,7 @@ SUN_TEXTS = ("north_source", "north_detail", "local_time", "utc_offset", "utc")
 
 def _sun_path(name: str) -> Path:
     safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name)[:120]
-    folder = OUTPUT / safe
+    folder = scene_paths.scene_dir(safe)
     if not (folder / "capture.json").is_file():
         raise HTTPException(404, f"no scene made here called {safe}")
     return folder / "sun.json"
@@ -404,11 +528,29 @@ def sun_get(name: str):
 def sun_put(name: str, payload: dict = Body(...)):
     """Keep this scene's north and sun beside it. Only known fields are
     written, and only finite numbers; a payload without north removes the file.
-    Date, time and place arrive only when the user ticked that they may."""
+    Date, time and place arrive only when the user ticked that they may.
+
+    The one exception: a "level" block (the vertical tools/scene_up.py found
+    before anyone set north) survives both ways -- clearing north falls back to
+    it rather than deleting the file, so a scene exported for Blender still
+    stands level."""
     import math
     path = _sun_path(name)
+    level = None
+    if path.is_file():
+        try:
+            level = json.loads(path.read_text(encoding="utf-8")).get("level")
+        except ValueError:
+            level = None
     if not payload.get("north"):
-        path.unlink(missing_ok=True)
+        if isinstance(level, dict) and level.get("up"):
+            path.write_text(json.dumps(
+                {"format": "dlsun", "version": 1, "up": level["up"],
+                 "frame": "scene file (COLMAP-style: Y down, Z forward)",
+                 "level": level}, indent=1), encoding="utf-8")
+        else:
+            path.unlink(missing_ok=True)
+        _site_follow(path.parent.name)
         return {"ok": True, "removed": True}
     out = {"format": "dlsun", "version": 1}
     for key in SUN_VECTORS:
@@ -428,8 +570,65 @@ def sun_put(name: str, payload: dict = Body(...)):
         if isinstance(v, str) and len(v) <= 120:
             out[key] = v
     out["frame"] = "scene file (COLMAP-style: Y down, Z forward)"
+    if isinstance(level, dict):
+        out["level"] = level
     path.write_text(json.dumps(out, indent=1), encoding="utf-8")
+    _site_follow(path.parent.name)
     return {"ok": True}
+
+
+def _site_follow(safe: str) -> None:
+    """North decides site.json's Y axis: rebuild it when north changes -- in
+    the background, since the viewer saves north on every move of the slider
+    (debounced) and a rebuild reads the dense cloud."""
+    import threading
+    if (scene_paths.scene_dir(safe) / "site.json").is_file():
+        threading.Thread(target=_site_rebuild, args=(safe,), daemon=True).start()
+
+
+# ------------------------------------------------------------ scale and site
+
+@app.post("/api/scale/{name}")
+def scale_put(name: str, payload: dict = Body(...)):
+    """Keep a scale measured by hand with the scene: capture.json's
+    scale_m_per_unit (the viewer applies it on the next open) and site.json
+    (tools/site_frame.py), which every export reads."""
+    import math
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name)[:120]
+    record = scene_paths.scene_dir(safe) / "capture.json"
+    if not record.is_file():
+        raise HTTPException(404, f"no scene made here called {safe}")
+    f = payload.get("m_per_unit")
+    if not (isinstance(f, (int, float)) and math.isfinite(f) and f > 0):
+        raise HTTPException(400, "m_per_unit must be a positive number")
+    note = payload.get("note")
+    rec = json.loads(record.read_text(encoding="utf-8"))
+    rec["scale_m_per_unit"] = float(f)
+    rec["scale_note"] = note[:200] if isinstance(note, str) else "measured in the viewer"
+    record.write_text(json.dumps(rec, indent=2), encoding="utf-8")
+    return {"ok": True, "site": _site_rebuild(safe)}
+
+
+@app.get("/api/site/{name}")
+def site_get(name: str):
+    """The scene's coordinate system (site.json), or {} when none was made."""
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name)[:120]
+    path = scene_paths.scene_dir(safe) / "site.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _site_rebuild(safe: str) -> dict:
+    """Re-run tools/site_frame.py; a scene without a solve (a photo) has none."""
+    proc = subprocess.run([sys.executable, "-u", str(PROJECT / "tools" / "site_frame.py"), safe],
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=300)
+    if proc.returncode != 0:
+        tail = (proc.stderr or "").strip().splitlines()
+        return {"ok": False, "error": tail[-1] if tail else f"exit {proc.returncode}"}
+    return {"ok": True, **site_get(safe)}
 
 
 @app.get("/api/export/blender/{name}")

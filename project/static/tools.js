@@ -38,6 +38,7 @@ export class Tools {
     this._pending = [];        // points collected so far for the active tool
 
     this.onChange = null;      // UI refresh
+    this.onCalibrated = null;  // (metres, rawUnits) after a calibration by hand
     this.onHint = null;        // status line text (null clears)
 
     this._svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -100,6 +101,7 @@ export class Tools {
         this.scaleFactor = metres / raw;
         this.calibrated = true;
         this.estimated = false;          // measured by hand: no longer an estimate
+        this.onCalibrated?.(metres, raw);  // a scene made here keeps it (site.json)
       }
       return this.cancel();
     }

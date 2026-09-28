@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 APP = Path(__file__).resolve().parent
 PROJECT = APP.parent
@@ -28,6 +29,20 @@ ROOT = PROJECT.parent                      # ...\DL-SplatGenerator
 WORK = ROOT / "work"
 OUTPUT = ROOT / "output"
 PACKAGES = OUTPUT / "packages"
+
+sys.path.insert(0, str(PROJECT / "tools"))
+import scene_paths  # noqa: E402  -- output/<name>/ or the students' folder
+
+
+def packages_dir(name: str) -> Path:
+    """output/packages/, or INSIDE a student's scan folder (Marc, 2026-09-27):
+    one folder per student holds everything made from their video."""
+    return scene_paths.packages_dir(name)
+
+
+def packages_url(name: str) -> str:
+    rel = packages_dir(name).relative_to(OUTPUT).as_posix()
+    return "/output/" + quote(rel)
 
 # Where the writer lives. The environment variable is the escape hatch for a
 # machine that keeps the projects somewhere else.
@@ -67,8 +82,38 @@ def _safe_name(name: str) -> str:
 def paths(name: str) -> tuple[Path, Path]:
     """Where this scene's package folder and zip go."""
     name = _safe_name(name)
-    folder = PACKAGES / f"{name}.capturewalk"
+    folder = packages_dir(name) / f"{name}.capturewalk"
     return folder, folder.with_suffix(".capturewalk.zip")
+
+
+def _explicit_inputs(name: str) -> list:
+    """Everything the writer would look up in output/<name>/, handed over.
+
+    BLE's writer finds capture.json, the splat and the mesh only at
+    output/<name>/ -- a student's scene lives in output/3D scans for students/
+    (tools/scene_paths.py), where it would find none of them and stop at "no
+    stride". Passing them is also simply more exact. sun.json goes with it
+    when there is one: its "up" levels the scene (see HANDOVER - up without
+    north - 001 in output/for BLE/).
+    """
+    folder = scene_paths.scene_dir(name)
+    try:
+        rec = json.loads((folder / "capture.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    args = []
+    if rec.get("source") and Path(rec["source"]).is_file():
+        args += ["--video", rec["source"]]
+    stride = (rec.get("settings") or {}).get("stride")
+    if stride:
+        args += ["--stride", str(int(stride))]
+    if rec.get("ply") and (folder / rec["ply"]).is_file():
+        args += ["--splat", str(folder / rec["ply"])]
+    if (folder / "mesh" / "mesh.ply").is_file():
+        args += ["--mesh", str(folder / "mesh" / "mesh.ply")]
+    if (folder / "sun.json").is_file():
+        args += ["--sun", str(folder / "sun.json")]
+    return args
 
 
 def status(name: str) -> dict:
@@ -83,7 +128,7 @@ def status(name: str) -> dict:
     model, undistorted = _model(work) if work.is_dir() else (None, False)
     folder, zipped = paths(name)
 
-    record = OUTPUT / name / "capture.json"
+    record = scene_paths.scene_dir(name) / "capture.json"
     video = None
     stride = None
     splat = None
@@ -151,7 +196,7 @@ def status(name: str) -> dict:
         "exists": folder.is_dir() or zipped.is_file(),
         "folder": str(folder),
         "zip": str(zipped),
-        "zipUrl": f"/output/packages/{zipped.name}",
+        "zipUrl": f"{packages_url(name)}/{quote(zipped.name)}",
     }
 
 
@@ -160,7 +205,8 @@ def _remove_existing(folder: Path, zipped: Path) -> list:
     explicit replace, and only on the two paths we generate ourselves."""
     removed = []
     for p in (folder, zipped):
-        if p.parent.resolve() != PACKAGES.resolve():
+        if p.parent.resolve() not in (PACKAGES.resolve(),
+                                      packages_dir(p.name.split(".capturewalk")[0]).resolve()):
             raise ValueError(f"refusing to remove outside packages\\: {p}")
         if p.is_dir():
             shutil.rmtree(p)
@@ -187,13 +233,14 @@ def run(name: str, *, with_splat: bool = False, with_frames: bool = False,
             # The writer refuses to overwrite, and so do we without being asked.
             return {"ok": False, "exists": True, "status": state,
                     "error": f"a package for \"{name}\" is already in "
-                             f"output\\packages\\. Replacing it deletes the "
-                             f"folder and the .zip."}
+                             f"{folder.parent.relative_to(ROOT)}\\. Replacing "
+                             f"it deletes the folder and the .zip."}
         removed = _remove_existing(folder, zipped)
 
-    PACKAGES.mkdir(parents=True, exist_ok=True)
+    folder.parent.mkdir(parents=True, exist_ok=True)
     cmd = [sys.executable, "-X", "utf8", str(exporter()), str(WORK / name),
-           "--out", str(PACKAGES), "--zip"]
+           "--out", str(folder.parent), "--zip"]
+    cmd += _explicit_inputs(name)
     if with_splat:
         cmd += ["--with-splat"]
     if with_frames:
@@ -235,6 +282,6 @@ def run(name: str, *, with_splat: bool = False, with_frames: bool = False,
         "folderMB": made.get("written", {}).get("megabytes"),
         "zip": str(zipped) if zipped.is_file() else None,
         "zipMB": made.get("zipped", {}).get("megabytes"),
-        "zipUrl": f"/output/packages/{zipped.name}" if zipped.is_file() else None,
+        "zipUrl": f"{packages_url(name)}/{quote(zipped.name)}" if zipped.is_file() else None,
         "withSplat": with_splat,
     }

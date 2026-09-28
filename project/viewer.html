@@ -501,6 +501,45 @@
         </div>
       </details>
 
+      <!-- The package's terrain model (tools/package_dtm.py): one height per point on an even
+           grid, in the scene's SITE coordinates like every other export. The cell comes filled
+           in with what the data can fill and the shell follows it (three cells) until typed by
+           hand. Made again with the same values, nothing changes on disk; a file that would
+           come out different is never overwritten. -->
+      <details class="sub" id="tm-block" hidden>
+        <summary class="subhead">Terrain model for Blender, Rhino and printing</summary>
+        <div class="sub-body">
+          <div class="meta why">One height per point on an even grid, in the scan's own
+            coordinates: a GeoTIFF (<b>DL-TerrainDiversity</b>, QGIS), the same grid as a quad
+            mesh with the orthophoto (Blender, Rhino), and a closed shell to cut pieces from for
+            3D printing.</div>
+          <div class="meta" id="tm-missing" hidden></div>
+          <div id="tm-controls">
+            <label class="field">
+              <span>Model</span>
+              <select id="tm-source">
+                <option value="surface" selected>Surface &mdash; the top of what was scanned</option>
+                <option value="ground">Ground &mdash; stones and tufts left out</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Cell size <em id="tm-cell-note">&mdash;</em></span>
+              <input type="number" id="tm-cell" step="any" min="0" aria-label="Cell size">
+            </label>
+            <label class="field">
+              <span>Shell thickness <em id="tm-shell-note">&mdash;</em></span>
+              <input type="number" id="tm-shell" step="any" min="0" aria-label="Shell thickness">
+            </label>
+            <div class="row">
+              <button id="tm-go" class="ghost">Build the terrain model</button>
+              <button id="tm-reset" class="ghost">From the data</button>
+            </div>
+            <div class="meta" id="tm-state"></div>
+            <ul class="list" id="tm-files"></ul>
+          </div>
+        </div>
+      </details>
+
       <div class="meta keys" id="mesh-limits"><b>Two honest limits.</b> The result is in COLMAP
         units until you calibrate against something of known size &mdash; the right
         shape, the wrong size. And a camera only reconstructs what it sees, so
@@ -597,6 +636,34 @@
           </div>
           <div class="meta" id="blender-state"></div>
           <pre id="blender-log" hidden></pre>
+        </div>
+      </details>
+
+      <!-- The package: everything made from this scene in one folder, and a zip -- what a
+           student gets (tools/build_package.py). The step list is the tool's own plan for the
+           options ticked: made, to do, or cannot (and why). Nothing that exists is overwritten;
+           START HERE and the zip are made again when the package is newer, the old ones MOVED
+           to the scene's working folder. -->
+      <details class="sub" id="panel-package" hidden>
+        <summary class="subhead">Package &mdash; everything in one folder</summary>
+        <div class="sub-body">
+          <div class="meta why">Every file made from this scene, in one coordinate system, in one
+            folder with a <b>START HERE</b> page: Blender files, splats, the textured mesh, Rhino and
+            glTF files, drawings, terrain models, the camera table &mdash; and a zip of it.</div>
+          <label class="check"><input type="checkbox" id="pkg-levels" checked>
+            Lighter splats, trained at their size (the longest step)</label>
+          <label class="check"><input type="checkbox" id="pkg-blender" checked>
+            Blender files (needs Blender 4.5 or newer)</label>
+          <label class="check"><input type="checkbox" id="pkg-place" checked>
+            Place and time of filming in the files</label>
+          <div class="meta keys">Place and time are personal data about whoever filmed.</div>
+          <label class="check"><input type="checkbox" id="pkg-zip" checked>
+            Zip it</label>
+          <ul class="list" id="pkg-steps"></ul>
+          <div class="row">
+            <button id="pkg-go" class="ghost">Build the package</button>
+          </div>
+          <div class="meta" id="pkg-state"></div>
         </div>
       </details>
     </div>
@@ -719,7 +786,7 @@
   </a>
 </main>
 
-<input type="file" id="file-input" accept=".ply,.spz,.splat,.ksplat,.sog,.zip" hidden>
+<input type="file" id="file-input" accept=".ply,.spz,.splat,.ksplat,.sog,.zip,.dlscene" hidden>
 <input type="file" id="scene-input" accept=".json,.dlscene" hidden>
 
 <script type="module" src="static/app.js"></script>

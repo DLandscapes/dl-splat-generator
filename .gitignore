@@ -24,6 +24,11 @@ history and back up/
 test outputs/
 # local editor/agent config; holds absolute, machine-specific paths
 .claude/
+# The folder this project shares with BLE (Capture Walk): requests, log, the
+# contract, and BLE's pinned releases. Those releases are GPL-2.0-or-later
+# (they import bpy) and must never enter this Apache-2.0 repository. Moved
+# here from a separate folder on 2026-09-27.
+pipeline/
 
 # ---- THIRD-PARTY PROGRAMS: fetched, not redistributed ----------------------
 # COLMAP, Brush, ffmpeg and the face model -- 1.9 GB. Also a LICENSING line,

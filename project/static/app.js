@@ -3,7 +3,7 @@
 import { Viewer } from "./viewer.js";
 import { Tools } from "./tools.js";
 import {
-  buildScene, applyScene, downloadBlob, sha256, makeZip,
+  buildScene, applyScene, downloadBlob, sha256, makeZip, readZip,
 } from "./scene.js";
 import { photoSceneGlb, splatPlyForBlender } from "./gltf.js";
 import { PlanView } from "./plan.js";
@@ -73,10 +73,14 @@ let generatedName = null;
  * the part of capture.json the viewer needs in its own `record`, since it has
  * no output folder to fetch one from. */
 let currentSample = null;
+/* A scene bundle (.dlscene ZIP) carries its capture record -- the frame rate
+ * and stride the walk plays at -- the way a sample does. */
+let bundleRecord = null;
 
 async function loadSource(next, label, fromGenerated = null, sample = null) {
   generatedName = fromGenerated;
   currentSample = sample;
+  bundleRecord = next.record ?? null;
   showSampleCard();
   status(`Loading ${label}…`, 0);
   try {
@@ -114,6 +118,7 @@ function onSceneChanged() {
   $("panel-capture").hidden = !loaded || !viewer.captureCameras;
   syncCameraButton();
   refreshBlenderPanel();
+  refreshPackagePanel();
   refreshMeshPanel();
   syncFromCaptureRecord();
   refreshCaptureState();
@@ -414,13 +419,30 @@ function refreshLists() {
 // the section badges follow too: the Measure badge used to keep saying
 // "no scale" after a scale was set, until the next scene load
 tools.onChange = () => { refreshLists(); syncGroups(); syncPlanScale(); };
+/* A scale measured by hand on a scene made here is kept with it: written into
+ * its capture.json (scale_m_per_unit, read back on the next open) and into
+ * site.json, the one coordinate system every export uses -- so the package's
+ * mesh, cameras, contours and drawings come out in metres. */
+tools.onCalibrated = (metres, raw) => {
+  if (!generatedName || !hasBackend) return;
+  const name = generatedName;
+  fetch(`/api/scale/${encodeURIComponent(name)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      m_per_unit: metres / raw,
+      note: `measured in the viewer: ${metres} m between two points ${raw.toFixed(4)} units apart`,
+    }),
+  }).then((r) => r.ok && status(`Scale kept with "${name}" for its exports.`, 5000))
+    .catch(() => {});
+};
 
 /* ------------------------------------------------------------------- inputs */
 
 $("dropzone").onclick = () => $("file-input").click();
 $("file-input").onchange = (e) => {
   const f = e.target.files[0];
-  if (f) loadSource({ file: f }, f.name);
+  if (f && f.name.toLowerCase().endsWith(".dlscene")) openSceneOrBundle(f);
+  else if (f) loadSource({ file: f }, f.name);
   e.target.value = "";
 };
 $("clear-btn").onclick = (e) => {
@@ -453,6 +475,7 @@ async function detectBackend() {
       showHardware();
       wireMakePanel();
       refreshBlenderPanel();      // a scene may already be open on a reload
+      refreshPackagePanel();
       refreshMeshPanel();
       wireJobCard();
       resumeJob();
@@ -728,7 +751,11 @@ function pollJob() {
       renderJob(job);
       if (["done", "failed", "cancelled"].includes(job.status)) {
         activeJob = null;
-        if (job.status === "done") {
+        if (job.kind === "package") {
+          status(job.status === "done" ? `The package of "${job.name}" is ready.`
+                 : `⚠ The package stopped: ${job.error || "see the log"}`, 10000);
+          refreshPackagePanel();
+        } else if (job.status === "done") {
           status(`Scene "${job.name}" is ready.`, 8000);
           listGeneratedScenes();
         } else if (job.status === "failed") {
@@ -765,7 +792,7 @@ function wireJobCard() {
     if (!lastJob) { closeJobCard(); return; }
     // a mesh job produces a dense cloud, not a splat scene in the list
     if (lastJob.kind === "mesh") {
-      loadSource({ url: `/output/${encodeURIComponent(lastJob.name)}/mesh/dense.ply`,
+      loadSource({ url: `${sceneBase(lastJob.name)}/mesh/dense.ply`,
                    name: `${lastJob.name}_dense.ply` },
                  `${lastJob.name} dense cloud`);
     } else {
@@ -845,6 +872,7 @@ function renderJob(job) {
   } else if (job.status === "running") {
     title = job.kind === "mesh"
       ? `Building a measurable mesh from “${job.name}”`
+      : job.kind === "package" ? `Building the package of “${job.name}”`
       : `Making a scene from “${job.name}”`;
     stage = `${step}${job.stageLabel}${phase}`;
     count = counter || (job.frames ? `${job.frames} frames in play` : "");
@@ -855,12 +883,14 @@ function renderJob(job) {
   } else if (job.status === "done") {
     title = job.kind === "mesh"
       ? `Mesh of “${job.name}” is ready`
+      : job.kind === "package" ? `The package of “${job.name}” is ready`
       : `Scene “${job.name}” is ready`;
     stage = `Finished in ${fmtSpan(job.elapsed)}`
       + (job.registered && job.frames ? ` · ${job.registered} of ${job.frames} frames placed` : "");
   } else if (job.status === "failed") {
     title = job.kind === "mesh"
       ? `Mesh of “${job.name}” stopped`
+      : job.kind === "package" ? `The package of “${job.name}” stopped`
       : `Capture of “${job.name}” stopped`;
     stage = job.error || "See the log in the sidebar.";
     count = job.hint || "";
@@ -884,7 +914,8 @@ function renderJob(job) {
   $("job-note").hidden = !active;
   $("job-hide").hidden = !active;
   $("job-cancel").hidden = job.status !== "running" && job.status !== "queued";
-  $("job-open").hidden = job.status !== "done";
+  // a package is files in a folder, nothing to open in the viewer
+  $("job-open").hidden = job.status !== "done" || job.kind === "package";
   $("job-open").textContent = job.kind === "mesh" ? "Show the cloud" : "Open scene";
   $("job-close").hidden = active;
   syncCardVisibility(active);
@@ -1006,6 +1037,7 @@ async function refreshMeshPanel() {
   }
   $("mesh-state").textContent = bits.join(" ");
   refreshDemPanel();
+  refreshTmPanel();
 }
 
 function labelMeshQuality() {
@@ -1230,6 +1262,128 @@ $("dem-show").onclick = () => {
              `${generatedName} ${cropping ? "corridor ground" : "ground points"}`);
 };
 
+/* ---- terrain model for Blender, Rhino and printing ------------------------
+ * tools/package_dtm.py through /api/terrain-model: the scene's SITE coordinates,
+ * written into its package. The cell comes filled in with what the data can fill;
+ * the shell follows the cell (three cells) until someone types a thickness. The
+ * limits (finest cell, 0.5-10 cells of shell) are the tool's own, so the fields
+ * and the command line agree. */
+let tmInfo = null;
+let tmFor = null;             // the scene whose fields were last filled in
+let tmShellByHand = false;    // a typed thickness stops following the cell
+
+function tmUnit() { return tmInfo?.metres ? "m" : "scan units"; }
+function tmRound(v) { return Number(v.toPrecision(3)); }
+
+function tmNotes() {
+  const cell = Number($("tm-cell").value);
+  const shell = Number($("tm-shell").value);
+  const [lo, hi] = tmInfo?.shell_range_cells || [0.5, 10];
+  // the tool refuses values outside its limits; say so while typing, not only after Build
+  const cellOff = tmInfo?.ready && cell > 0 && cell < tmInfo.min_cell;
+  const shellOff = cell > 0 && shell > 0 && (shell / cell < lo - 1e-9 || shell / cell > hi + 1e-9);
+  $("tm-cell-note").textContent = tmInfo?.ready
+    ? `${cellOff ? "⚠ " : ""}${tmUnit()} · from the data ${tmInfo.default_cell}, finest ${tmInfo.min_cell}` : "—";
+  $("tm-shell-note").textContent = cell > 0 && shell > 0
+    ? `${shellOff ? "⚠ " : ""}${tmUnit()} · ${tmRound(shell / cell)} cells (${lo}–${hi} allowed)` : "—";
+}
+
+function tmFillDefaults() {
+  $("tm-cell").value = tmInfo.default_cell;
+  $("tm-shell").value = tmRound(tmInfo.shell_cells * tmInfo.default_cell);
+  tmShellByHand = false;
+}
+
+/* One row per model made (surface/ground × cell), its files as short links; the
+ * full name is in each link's title and becomes the downloaded file's name. */
+function tmFileLabel(name) {
+  const shell = name.match(/_shell(?:_([\d.]+))?\.obj$/);
+  if (shell) return `shell ${shell[1] || "(3 cells)"}`;
+  if (name.endsWith("_ortho.jpg")) return "orthophoto";
+  if (name.endsWith("_ortho.jgw")) return "world file";
+  if (name.endsWith(".tif")) return "GeoTIFF";
+  if (name.endsWith(".obj")) return "quad mesh";
+  if (name.endsWith(".mtl")) return "material";
+  return name;
+}
+
+function renderTmFiles() {
+  const list = $("tm-files");
+  list.innerHTML = "";
+  for (const m of tmInfo?.built || []) {
+    const li = document.createElement("li");
+    const what = document.createElement("span");
+    what.className = "tm-model";
+    what.textContent = `${m.kind === "DSM" ? "Surface" : "Ground"} · cell ${m.cell}`;
+    li.append(what);
+    for (const f of m.files) {
+      const a = document.createElement("a");
+      a.href = f.url;
+      a.download = f.name;
+      a.title = f.name;
+      a.textContent = tmFileLabel(f.name);
+      li.append(a);
+    }
+    list.appendChild(li);
+  }
+}
+
+async function refreshTmPanel() {
+  const block = $("tm-block");
+  if (!generatedName || !meshInfo?.built) { block.hidden = true; return; }
+  try {
+    tmInfo = await (await fetch(`/api/terrain-model/${encodeURIComponent(generatedName)}`)).json();
+  } catch { block.hidden = true; return; }
+  block.hidden = false;
+  $("tm-missing").hidden = !!tmInfo.ready;
+  $("tm-controls").hidden = !tmInfo.ready;
+  if (!tmInfo.ready) {
+    $("tm-missing").textContent = "Made from the scene's package, which is not complete yet: "
+      + `it has no ${(tmInfo.missing || []).join("; no ")}.`;
+    return;
+  }
+  if (tmFor !== generatedName) { tmFillDefaults(); tmFor = generatedName; }
+  $("tm-cell").min = tmInfo.min_cell;
+  tmNotes();
+  renderTmFiles();
+}
+
+$("tm-cell").oninput = () => {
+  const cell = Number($("tm-cell").value);
+  if (!tmShellByHand && cell > 0) $("tm-shell").value = tmRound(tmInfo.shell_cells * cell);
+  tmNotes();
+};
+$("tm-shell").oninput = () => { tmShellByHand = true; tmNotes(); };
+$("tm-reset").onclick = () => { if (tmInfo?.ready) { tmFillDefaults(); tmNotes(); } };
+
+$("tm-go").onclick = async () => {
+  const name = generatedName;
+  if (!name || !tmInfo?.ready) return;
+  const cell = Number($("tm-cell").value) || 0;
+  const shell = Number($("tm-shell").value) || 0;
+  $("tm-go").disabled = true;
+  $("tm-state").textContent = "Building the grid, the quad mesh and the shell…";
+  try {
+    const res = await fetch(`/api/terrain-model/${encodeURIComponent(name)}`
+      + `?source=${$("tm-source").value}&cell=${cell}&shell=${shell}`, { method: "POST" });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || data.detail || res.statusText);
+    const r = data.result;
+    tmInfo = data;
+    renderTmFiles();
+    tmNotes();
+    const made = r.written.length
+      ? `${r.written.length} file${r.written.length === 1 ? "" : "s"} written`
+      : "nothing new — the same model was already there";
+    $("tm-state").textContent = `${r.kind === "DSM" ? "Surface" : "Ground"} model, cell ${r.cell} `
+      + `${r.units}, shell ${r.shell}: ${made}.`;
+    status(`Terrain model ready for “${name}”.`, 7000);
+  } catch (err) {
+    $("tm-state").textContent = `⚠ ${err.message}`;
+  }
+  $("tm-go").disabled = false;
+};
+
 /* The dense cloud is a plain point-cloud PLY, which this viewer reads. Showing
  * it is the quickest way to judge whether the geometry is worth drawing from —
  * a hard surface comes out as a continuous sheet, planting as fragments. */
@@ -1335,10 +1489,104 @@ async function runBlenderExport(replace) {
 $("blender-go").onclick = () => runBlenderExport(false);
 $("blender-replace").onclick = () => runBlenderExport(true);
 
+/* --------------------------------------------------------------- the package
+ * Everything made from the scene in one folder, and a zip (tools/build_package.py
+ * through /api/package). The list is the tool's own plan for the boxes ticked --
+ * made, to do, cannot and why -- so the panel never claims a step it would skip.
+ * The build is a job like a capture: the card shows the step and the tools' counters. */
+let pkgInfo = null;
+const PKG_STATE = { done: "made", todo: "to do", cannot: "cannot", off: "left out" };
+
+function pkgQuery() {
+  return `levels=${$("pkg-levels").checked ? "train" : "skip"}`
+    + `&blender=${$("pkg-blender").checked ? "build" : "skip"}`
+    + `&place=${$("pkg-place").checked}&zip=${$("pkg-zip").checked}`;
+}
+
+async function refreshPackagePanel() {
+  const panel = $("panel-package");
+  if (!generatedName || !hasBackend) { panel.hidden = true; syncGroups(); return; }
+  const scene = generatedName;
+  try {
+    pkgInfo = await (await fetch(`/api/package/${encodeURIComponent(scene)}?${pkgQuery()}`)).json();
+  } catch { panel.hidden = true; syncGroups(); return; }
+  if (scene !== generatedName) return;          // another scene was opened meanwhile
+  panel.hidden = false;
+  syncGroups();
+  const list = $("pkg-steps");
+  list.innerHTML = "";
+  for (const s of pkgInfo.steps || []) {
+    const li = document.createElement("li");
+    li.className = `pkg-${s.state}`;
+    const what = document.createElement("span");
+    what.className = "grow";
+    what.textContent = s.label.charAt(0).toUpperCase() + s.label.slice(1);
+    what.title = s.label + (s.why ? ` — ${s.why}` : "");
+    const state = document.createElement("span");
+    state.className = "val";
+    state.textContent = PKG_STATE[s.state] || s.state;
+    li.append(what, state);
+    if (s.why && s.state !== "done") {
+      const why = document.createElement("span");
+      why.className = "pkg-why";
+      why.textContent = s.why;
+      li.append(why);
+    }
+    list.appendChild(li);
+  }
+  const steps = pkgInfo.steps || [];
+  const made = steps.filter((s) => s.state === "done").length;
+  const todo = steps.filter((s) => s.state === "todo").length;
+  $("pkg-go").disabled = !pkgInfo.ready || !!pkgInfo.job;
+  $("pkg-go").textContent = pkgInfo.job ? "Being built…" : (made ? "Build what is missing" : "Build the package");
+  const state = $("pkg-state");
+  state.textContent = pkgInfo.error ? `⚠ ${pkgInfo.error}`
+    : `${made} of ${steps.length} steps made, ${todo} to do. Folder: ${pkgInfo.folder}`;
+  if (pkgInfo.zipUrl) {
+    const a = document.createElement("a");
+    a.href = pkgInfo.zipUrl;
+    a.download = "";
+    a.textContent = ` Download the zip (${pkgInfo.zipMB} MB)`;
+    state.append(a);
+  }
+}
+
+for (const id of ["pkg-levels", "pkg-blender", "pkg-place", "pkg-zip"]) {
+  $(id).onchange = refreshPackagePanel;
+}
+
+$("pkg-go").onclick = async () => {
+  const name = generatedName;
+  if (!name) return;
+  $("pkg-go").disabled = true;
+  $("pkg-state").textContent = "Starting…";
+  try {
+    const res = await fetch(`/api/package/${encodeURIComponent(name)}?${pkgQuery()}`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    activeJob = data.job.id;
+    $("make-progress").hidden = false;
+    pollJob();
+    refreshPackagePanel();
+  } catch (err) {
+    $("pkg-state").textContent = `⚠ ${err.message}`;
+    $("pkg-go").disabled = false;
+  }
+};
+
 /* Scenes produced by tools/capture.py, listed from output/scenes.json.
  * Loading them by URL (rather than dropping a file in) is what lets the viewer
  * find the cameras.json beside them and open at a real capture position. */
 let generated = [];   // the scenes.json entries, for "Open scene" on the card
+
+/* A scene's folder URL. Not always /output/<name>: a student's video is saved
+ * under /output/3D scans for students/<name> (tools/scene_paths.py), and the
+ * list's own "ply" URL is the one place that knows which. */
+function sceneBase(name) {
+  const s = generated.find((g) => g.name === name);
+  return s ? s.ply.slice(0, s.ply.lastIndexOf("/"))
+           : `/output/${encodeURIComponent(name)}`;
+}
 
 function openGenerated(name) {
   const s = generated.find((g) => g.name === name);
@@ -1487,7 +1735,7 @@ window.addEventListener("drop", (e) => {
   const f = e.dataTransfer.files?.[0];
   if (!f) return;
   const lower = f.name.toLowerCase();
-  if (lower.endsWith(".json") || lower.endsWith(".dlscene")) loadSceneFile(f);
+  if (lower.endsWith(".json") || lower.endsWith(".dlscene")) openSceneOrBundle(f);
   else if (Viewer.isSplatFile(f.name)) loadSource({ file: f }, f.name);
   else if (/\.(mov|mp4|m4v|avi|mkv)$/.test(lower)) {
     // a video is not something to view, it is something to turn into a scene
@@ -2308,11 +2556,11 @@ function labelWalkSpeed() {
 async function syncFromCaptureRecord() {
   walkRealtimeFps = null;
   // a sample carries its record; a scene made here has one in its output folder
-  let rec = currentSample?.record ?? null;
+  let rec = currentSample?.record ?? bundleRecord ?? null;
   if (!rec && generatedName) {
     try {
       rec = await (await fetch(
-        `/output/${encodeURIComponent(generatedName)}/capture.json`)).json();
+        `${sceneBase(generatedName)}/capture.json`)).json();
     } catch { /* no record, or a scene not made here: keep the defaults */ }
   }
   const stride = rec?.settings?.stride;
@@ -2665,9 +2913,46 @@ $("scene-save").onclick = async () => {
 $("scene-load").onclick = () => $("scene-input").click();
 $("scene-input").onchange = (e) => {
   const f = e.target.files[0];
-  if (f) loadSceneFile(f);
+  if (f) openSceneOrBundle(f);
   e.target.value = "";
 };
+
+/* A .dlscene is either the small scene file (JSON, beside a splat the user
+ * opens first) or a scene BUNDLE: a ZIP with the splat, the capture cameras
+ * and the scene state in one file -- what the student package carries, so a
+ * scan opens with its camera walk from a single file, with no server. */
+async function openSceneOrBundle(file) {
+  const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  if (head[0] === 0x50 && head[1] === 0x4b) return openBundle(file);   // "PK"
+  return loadSceneFile(file);
+}
+
+async function openBundle(file) {
+  try {
+    status(`Opening ${file.name}…`, 0);
+    const entries = await readZip(await file.arrayBuffer());
+    const text = (n) => new TextDecoder().decode(entries.get(n));
+    if (!entries.has("scene.json")) throw new Error(`${file.name} holds no scene.json`);
+    const data = JSON.parse(text("scene.json"));
+    const b = data.bundle;
+    if (data.format !== "dlscene" || !b?.splat || !entries.has(b.splat))
+      throw new Error(`${file.name} is not a scene bundle this viewer can open`);
+    const ext = b.splat.split(".").pop();
+    const splat = new File([entries.get(b.splat)], `${b.name || "scene"}.${ext}`);
+    await loadSource({ file: splat, record: b.capture || null }, `${b.name || file.name} (scene bundle)`);
+    if (!viewer.mesh) return;
+    if (b.cameras && entries.has(b.cameras)) {
+      const cams = JSON.parse(text(b.cameras));
+      if (cams?.format === "dlcameras" && viewer.setCaptureCameras(cams.cameras)) {
+        viewer.goToCaptureCamera(0, false);
+        viewer.home = viewer.getCameraState();
+      }
+    }
+    applySceneData(data, { checkSource: false });
+    status(`${b.name || file.name}: scan, ${viewer.captureCameras?.length || 0} capture cameras`
+      + " and the scene state restored.", 6000);
+  } catch (err) { fail(err); }
+}
 
 async function loadSceneFile(file) {
   try {
@@ -2676,8 +2961,14 @@ async function loadSceneFile(file) {
       status(`Load ${data.source?.name || "the splat file"} first, then this scene.`, 6000);
       return;
     }
+    await applySceneData(data, { checkSource: true });
+  } catch (err) { fail(err); }
+}
+
+async function applySceneData(data, { checkSource }) {
+  try {
     const d = applyScene(data, { viewer, tools });
-    if (data.source?.sha256 && sourceInfo) {
+    if (checkSource && data.source?.sha256 && sourceInfo) {
       const bytes = await currentBytes();
       if (await sha256(bytes) !== data.source.sha256)
         status(`⚠ Scene was saved against a different ${data.source.name}.`, 6000);
@@ -2705,7 +2996,7 @@ async function loadSceneFile(file) {
     syncSectionUi();
     applySection();
     onSceneChanged();
-    status("Scene restored.");
+    if (checkSource) status("Scene restored.");
   } catch (err) { fail(err); }
 }
 

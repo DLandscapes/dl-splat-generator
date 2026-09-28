@@ -158,3 +158,49 @@ export function makeZip(entries) {
   return new Blob([...parts, ...central, new Uint8Array(end.buffer)],
     { type: "application/zip" });
 }
+
+/**
+ * Read a ZIP: Map of entry name -> Uint8Array. Stored entries are sliced out
+ * directly; deflated ones go through the browser's own DecompressionStream,
+ * so a bundle zipped by any tool opens too. Reads the central directory (the
+ * truth about sizes), not the local headers.
+ *
+ * Used for the scene BUNDLE (a .dlscene that is a ZIP: the splat, the capture
+ * cameras and the scene state in one file -- written by
+ * tools/package_viewer_scene.py for the student package).
+ */
+export async function readZip(buffer) {
+  const u8 = new Uint8Array(buffer);
+  const dv = new DataView(buffer);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("not a ZIP file");
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  const out = new Map();
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error("damaged ZIP directory");
+    const method = dv.getUint16(p + 10, true);
+    const csize = dv.getUint32(p + 20, true);
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    const local = dv.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nameLen));
+    const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+    const raw = u8.subarray(start, start + csize);
+    if (method === 0) {
+      out.set(name, raw);
+    } else if (method === 8) {
+      const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      out.set(name, new Uint8Array(await new Response(stream).arrayBuffer()));
+    } else {
+      throw new Error(`ZIP entry ${name} uses an unsupported compression (${method})`);
+    }
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}

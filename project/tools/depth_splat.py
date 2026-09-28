@@ -248,8 +248,14 @@ def main() -> int:
         print(f"No such image: {image}", file=sys.stderr)
         return 1
     name = args.name or f"{image.stem}_depth"
-    out_root = Path(args.out_root).resolve() if args.out_root else OUTPUT
-    out_dir = out_root / name
+    # a student's file: output/3D scans for students/<name>/working/ (scene_paths)
+    import scene_paths
+    if args.out_root:
+        out_root = Path(args.out_root).resolve()
+        out_dir = out_root / name
+    else:
+        out_root = OUTPUT
+        out_dir = scene_paths.new_scene_dir(image, name)
 
     log(f"Single-image depth -> splats")
     log(f"  image  {image}")
@@ -315,7 +321,8 @@ def main() -> int:
     import scene_index
     scene_index.register(out_root, name, served=served,
                          original=ply if served is not ply else None,
-                         created=created, method="single-image depth")
+                         created=created, method="single-image depth",
+                         index_root=out_root if args.out_root else OUTPUT, folder=out_dir)
 
     (out_dir / "capture.json").write_text(json.dumps({
         "name": name,
